@@ -497,7 +497,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.lintayu.MacNTFS;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rookiestudio.MacNTFS;
 				PRODUCT_NAME = MacNTFS;
 				SDKROOT = macosx;
 				SWIFT_STRICT_CONCURRENCY = minimal;
@@ -530,7 +530,7 @@
 				OTHER_LDFLAGS = (
 					"-lntfs-3g",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.lintayu.MacNTFS.NTFSFSExtension;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rookiestudio.MacNTFS.NTFSFSExtension;
 				PRODUCT_NAME = NTFSFSExtension;
 				SDKROOT = macosx;
 				SWIFT_OBJC_BRIDGING_HEADER = "NTFSFSExtension/NTFSFSExtension-Bridging-Header.h";
@@ -620,7 +620,7 @@
 				OTHER_LDFLAGS = (
 					"-lntfs-3g",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.lintayu.ntfs-bridge-test";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.rookiestudio.ntfs-bridge-test";
 				PRODUCT_NAME = "ntfs-bridge-test";
 				SDKROOT = macosx;
 			};
@@ -639,7 +639,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.lintayu.MacNTFS;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rookiestudio.MacNTFS;
 				PRODUCT_NAME = MacNTFS;
 				SDKROOT = macosx;
 				SWIFT_STRICT_CONCURRENCY = minimal;
@@ -672,7 +672,7 @@
 				OTHER_LDFLAGS = (
 					"-lntfs-3g",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.lintayu.MacNTFS.NTFSFSExtension;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rookiestudio.MacNTFS.NTFSFSExtension;
 				PRODUCT_NAME = NTFSFSExtension;
 				SDKROOT = macosx;
 				SWIFT_OBJC_BRIDGING_HEADER = "NTFSFSExtension/NTFSFSExtension-Bridging-Header.h";
@@ -700,7 +700,7 @@
 				OTHER_LDFLAGS = (
 					"-lntfs-3g",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.lintayu.ntfs-bridge-test";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.rookiestudio.ntfs-bridge-test";
 				PRODUCT_NAME = "ntfs-bridge-test";
 				SDKROOT = macosx;
 			};

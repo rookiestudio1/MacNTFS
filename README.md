@@ -43,7 +43,7 @@ xcodebuild -scheme MacNTFS -configuration Release build
 
 FSKit 延伸功能需要 `com.apple.developer.fskit.fsmodule` entitlement，macOS 只會載入**由 provisioning profile 授權**的延伸功能，ad-hoc 簽章不會被載入。請在 `project.yml` 的 `DEVELOPMENT_TEAM` 填入你的 Team ID（或在 Xcode 的 Signing & Capabilities 選擇 Team），並確認 App ID 已啟用 FSKit 能力，再 `xcodegen generate`。
 
-Bundle ID 預設為 `com.lintayu.MacNTFS` 與 `com.lintayu.MacNTFS.NTFSFSExtension`，可在 `project.yml` 一併修改（App 內 `ExtensionStatus.swift` 的常數也要跟著改）。
+Bundle ID 預設為 `com.rookiestudio.MacNTFS` 與 `com.rookiestudio.MacNTFS.NTFSFSExtension`，可在 `project.yml` 一併修改（App 內 `ExtensionStatus.swift` 的常數也要跟著改）。
 
 ## 安裝與啟用
 
@@ -88,7 +88,7 @@ mount | grep ntfs3g
 diskutil unmount diskN && hdiutil detach diskN
 
 # 除錯紀錄
-log stream --predicate 'subsystem == "com.apple.FSKit" OR subsystem == "com.lintayu.MacNTFS"'
+log stream --predicate 'subsystem == "com.apple.FSKit" OR subsystem == "com.rookiestudio.MacNTFS"'
 pluginkit -m -p com.apple.fskit.fsmodule  # 確認延伸功能已註冊
 ```
 

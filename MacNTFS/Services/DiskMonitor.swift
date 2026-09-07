@@ -18,7 +18,7 @@ final class DiskMonitor: ObservableObject {
 
   private var session: DASession?
   /// DiskArbitration 回呼專用的序列佇列。
-  private let queue = DispatchQueue(label: "com.lintayu.MacNTFS.DiskMonitor")
+  private let queue = DispatchQueue(label: "com.rookiestudio.MacNTFS.DiskMonitor")
   /// 是否已註冊回呼。
   private var isRunning = false
 

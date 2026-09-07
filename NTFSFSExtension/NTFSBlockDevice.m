@@ -11,7 +11,7 @@ static os_log_t NTFSDeviceLog(void) {
   static os_log_t log;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    log = os_log_create("com.lintayu.MacNTFS", "device");
+    log = os_log_create("com.rookiestudio.MacNTFS", "device");
   });
   return log;
 }

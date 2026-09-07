@@ -114,7 +114,7 @@ MacNTFS.xcodeproj（由 XcodeGen 的 project.yml 產生）
 ## 7. 已知限制與假設
 
 - 假設使用者有 Apple Developer Team 可簽署受限 entitlement；`project.yml` 的 `DEVELOPMENT_TEAM` 需自行填入。
-- Bundle ID 前綴採 `com.lintayu.MacNTFS`，可在 `project.yml` 修改。
+- Bundle ID 前綴採 `com.rookiestudio.MacNTFS`，可在 `project.yml` 修改。
 - 不實作 Kernel-offloaded I/O；大檔案吞吐量受 XPC 往返限制。
 - 不支援 NTFS 壓縮/加密檔案的寫入（讀取由 libntfs-3g 支援）。
 - xattr 以具名串流實作，Windows 端會看到 `檔名:xattr名` 串流。

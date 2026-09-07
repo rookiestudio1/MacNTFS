@@ -3,7 +3,7 @@
 # 修改簽章：把 DEVELOPMENT_TEAM 換成你的 Apple Developer Team ID
 name: MacNTFS
 options:
-  bundleIdPrefix: com.lintayu
+  bundleIdPrefix: com.rookiestudio
   deploymentTarget:
     macOS: "15.4"
   xcodeVersion: "16.3"
@@ -49,7 +49,7 @@ targets:
         com.apple.security.app-sandbox: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.lintayu.MacNTFS
+        PRODUCT_BUNDLE_IDENTIFIER: com.rookiestudio.MacNTFS
         PRODUCT_NAME: MacNTFS
         ENABLE_APP_SANDBOX: NO
         ENABLE_HARDENED_RUNTIME: YES
@@ -121,7 +121,7 @@ targets:
         com.apple.developer.fskit.fsmodule: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.lintayu.MacNTFS.NTFSFSExtension
+        PRODUCT_BUNDLE_IDENTIFIER: com.rookiestudio.MacNTFS.NTFSFSExtension
         PRODUCT_NAME: NTFSFSExtension
         ENABLE_APP_SANDBOX: YES
         ENABLE_HARDENED_RUNTIME: YES

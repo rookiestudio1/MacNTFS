@@ -7,7 +7,7 @@ import FSKit
 @MainActor
 final class ExtensionStatus: ObservableObject {
   /// 延伸功能的 bundle identifier。
-  static let extensionBundleIdentifier = "com.lintayu.MacNTFS.NTFSFSExtension"
+  static let extensionBundleIdentifier = "com.rookiestudio.MacNTFS.NTFSFSExtension"
 
   enum State: Equatable, Sendable {
     /// 尚未查詢。
