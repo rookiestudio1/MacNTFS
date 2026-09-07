@@ -1,0 +1,185 @@
+# XcodeGen 專案描述檔
+# 產生 Xcode 專案：xcodegen generate
+# 修改簽章：把 DEVELOPMENT_TEAM 換成你的 Apple Developer Team ID
+name: MacNTFS
+options:
+  bundleIdPrefix: com.lintayu
+  deploymentTarget:
+    macOS: "15.4"
+  xcodeVersion: "16.3"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  indentWidth: 2
+  tabWidth: 2
+  usesTabs: false
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "15.4"
+    ARCHS: "$(ARCHS_STANDARD)"
+    ONLY_ACTIVE_ARCH: NO
+    CLANG_ENABLE_OBJC_ARC: YES
+    GCC_TREAT_WARNINGS_AS_ERRORS: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  # ---- 選單列 App ----
+  MacNTFS:
+    type: application
+    platform: macOS
+    sources:
+      - path: MacNTFS
+        excludes:
+          - "Info.plist"
+          - "*.entitlements"
+    info:
+      path: MacNTFS/Info.plist
+      properties:
+        CFBundleDisplayName: MacNTFS
+        LSUIElement: true
+        LSApplicationCategoryType: public.app-category.utilities
+        NSAppleEventsUsageDescription: MacNTFS 需要以管理員權限執行 mount 指令，以便在系統內建唯讀驅動程式搶先掛載時改用 MacNTFS 掛載。
+        NSHumanReadableCopyright: libntfs-3g 以 LGPL 授權；本專案原始碼授權見 LICENSE。
+    entitlements:
+      path: MacNTFS/MacNTFS.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lintayu.MacNTFS
+        PRODUCT_NAME: MacNTFS
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_STRICT_CONCURRENCY: minimal
+    dependencies:
+      - target: NTFSFSExtension
+        embed: true
+    scheme:
+      testTargets: []
+
+  # ---- FSKit 檔案系統延伸功能 ----
+  NTFSFSExtension:
+    type: extensionkit-extension
+    platform: macOS
+    sources:
+      - path: NTFSFSExtension
+        excludes:
+          - "Info.plist"
+          - "*.entitlements"
+    preBuildScripts:
+      - name: 編譯 libntfs-3g（若尚未存在）
+        script: |
+          "$SRCROOT/Scripts/build-ntfs3g.sh"
+        basedOnDependencyAnalysis: false
+    info:
+      path: NTFSFSExtension/Info.plist
+      properties:
+        CFBundleDisplayName: MacNTFS 檔案系統延伸功能
+        EXAppExtensionAttributes:
+          EXExtensionPointIdentifier: com.apple.fskit.fsmodule
+          FSActivateOptionSyntax:
+            shortOptions: "g:m:o:u:"
+          FSCheckOptionSyntax:
+            shortOptions: "nqy"
+          FSFormatOptionSyntax:
+            shortOptions: "v"
+          FSMediaTypes:
+            Windows_NTFS:
+              FSMediaProperties:
+                Content Hint: Windows_NTFS
+                Leaf: true
+              FSProbeOrder: 500
+            EBD0A0A2-B9E5-4433-87C0-68B6B72699C7:
+              FSMediaProperties:
+                Content Hint: EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
+                Leaf: true
+              FSProbeOrder: 1500
+            Partitionless:
+              FSMediaProperties:
+                Leaf: true
+                Whole: true
+              FSProbeOrder: 3500
+          FSPersonalities:
+            NTFS:
+              FSName: NTFS (MacNTFS)
+              FSSupportsBlockResources: true
+              FSfileObjectsAreCaseSensitive: false
+          FSRequiresSecurityScopedPathURLResources: false
+          FSShortName: ntfs3g
+          FSSupportsBlockResources: true
+          FSSupportsGenericURLResources: false
+          FSSupportsKernelOffloadedIO: false
+          FSSupportsPathURLs: false
+          FSSupportsServerURLs: false
+    entitlements:
+      path: NTFSFSExtension/NTFSFSExtension.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.developer.fskit.fsmodule: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lintayu.MacNTFS.NTFSFSExtension
+        PRODUCT_NAME: NTFSFSExtension
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_OBJC_BRIDGING_HEADER: NTFSFSExtension/NTFSFSExtension-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/ThirdParty/ntfs-3g/include"
+          - "$(SRCROOT)/NTFSFSExtension/Bridge"
+        LIBRARY_SEARCH_PATHS:
+          - "$(SRCROOT)/ThirdParty/ntfs-3g/lib"
+        OTHER_LDFLAGS:
+          - "-lntfs-3g"
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - "ENABLE_NFCONV=1"
+        CLANG_WARN_DOCUMENTATION_COMMENTS: NO
+    dependencies:
+      - sdk: FSKit.framework
+      - sdk: CoreFoundation.framework
+
+  # ---- 橋接層測試工具（用映像檔測試，不需要 FSKit）----
+  ntfs-bridge-test:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Tools/ntfs-bridge-test
+      - path: NTFSFSExtension/Bridge
+    preBuildScripts:
+      - name: 編譯 libntfs-3g（若尚未存在）
+        script: |
+          "$SRCROOT/Scripts/build-ntfs3g.sh"
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_NAME: ntfs-bridge-test
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/ThirdParty/ntfs-3g/include"
+          - "$(SRCROOT)/NTFSFSExtension/Bridge"
+        LIBRARY_SEARCH_PATHS:
+          - "$(SRCROOT)/ThirdParty/ntfs-3g/lib"
+        OTHER_LDFLAGS:
+          - "-lntfs-3g"
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - "ENABLE_NFCONV=1"
+    dependencies:
+      - sdk: CoreFoundation.framework
+
+schemes:
+  MacNTFS:
+    build:
+      targets:
+        MacNTFS: all
+        NTFSFSExtension: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  ntfs-bridge-test:
+    build:
+      targets:
+        ntfs-bridge-test: all
+    run:
+      config: Debug
