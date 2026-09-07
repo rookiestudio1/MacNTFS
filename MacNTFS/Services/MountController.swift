@@ -253,10 +253,22 @@ final class MountController: ObservableObject {
       .replacingOccurrences(of: "\"", with: "\\\"")
   }
 
+  /// 掛載點名稱最多嘗試的流水號，避免在異常情況下無限迴圈。
+  nonisolated static let maximumMountPointSuffix = 999
+
   /// 為磁碟計算可用的掛載點：清理名稱中的 `/` 與 `:`，
-  /// 若資料夾已存在且非空則依序加上「 1」「 2」…。
-  nonisolated private static func availableMountPoint(for volume: NTFSVolume) -> String {
-    var name = (volume.volumeName ?? "")
+  /// 若該路徑已被占用則依序加上「 1」「 2」…。
+  ///
+  /// 只有這條備援路徑需要自己算掛載點；走 `diskutil` 時是由 diskarbitrationd
+  /// 決定掛載點並自行去重，不會經過這裡。
+  ///
+  /// 內部可見（非 private）以便單獨驗證這段邏輯。
+  nonisolated static func availableMountPoint(for volume: NTFSVolume) -> String {
+    availableMountPoint(name: volume.volumeName ?? "")
+  }
+
+  nonisolated static func availableMountPoint(name rawName: String) -> String {
+    var name = rawName
       .replacingOccurrences(of: "/", with: "-")
       .replacingOccurrences(of: ":", with: "-")
       .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -264,24 +276,64 @@ final class MountController: ObservableObject {
       name = "NTFS Volume"
     }
 
+    // 一次取得目前所有掛載點，迴圈中重複比對即可。
+    let mounted = mountedPaths()
     let fileManager = FileManager.default
     var candidate = "/Volumes/\(name)"
     var suffix = 1
-    while isNonEmptyDirectory(candidate, fileManager: fileManager) {
+    while isPathOccupied(candidate, mountedPaths: mounted, fileManager: fileManager) {
+      guard suffix <= maximumMountPointSuffix else {
+        // 極端情況：加上 UUID 確保不會撞名。
+        return "/Volumes/\(name) \(UUID().uuidString.prefix(8))"
+      }
       candidate = "/Volumes/\(name) \(suffix)"
       suffix += 1
     }
     return candidate
   }
 
-  /// 路徑是否為已存在且非空的資料夾（或已是掛載點）。
-  nonisolated private static func isNonEmptyDirectory(_ path: String, fileManager: FileManager) -> Bool {
+  /// 路徑是否已被占用，不可作為新的掛載點。
+  ///
+  /// 判斷順序很重要：**先看它是不是活的掛載點**。只看「資料夾是否為空」並不可靠，
+  /// 因為一個已掛載但內容為空的卷（例如剛格式化又以唯讀掛載的磁碟，macOS 無法在上面
+  /// 建立 `.fseventsd`）看起來就是空資料夾，若據此判定可用，`mount` 會蓋在活的掛載點上，
+  /// 把原本那顆磁碟藏起來。
+  nonisolated static func isPathOccupied(_ path: String,
+                                         mountedPaths: Set<String>,
+                                         fileManager: FileManager) -> Bool {
+    // 1. 已經是掛載點：無論內容為何都不可使用。
+    if mountedPaths.contains(path) { return true }
+    // 2. 不存在：可以使用（稍後由 mkdir 建立）。
     var isDirectory: ObjCBool = false
     guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else { return false }
-    // 已存在但不是資料夾（例如檔案），也視為不可用。
+    // 3. 存在但不是資料夾（例如同名檔案）：不可使用。
     guard isDirectory.boolValue else { return true }
+    // 4. 存在且是資料夾：空的可以重複使用（macOS 卸載後常留下空資料夾），非空則不行。
     let contents = (try? fileManager.contentsOfDirectory(atPath: path)) ?? []
     return !contents.isEmpty
+  }
+
+  /// 目前系統上所有的掛載點路徑。
+  ///
+  /// 使用 `getmntinfo_r_np` 而非 `getmntinfo`，後者回傳共用的靜態緩衝區，
+  /// 在非主執行緒呼叫並不安全。
+  nonisolated static func mountedPaths() -> Set<String> {
+    var buffer: UnsafeMutablePointer<statfs>?
+    let count = getmntinfo_r_np(&buffer, MNT_NOWAIT)
+    guard count > 0, let buffer else { return [] }
+    defer { free(buffer) }
+
+    var paths = Set<String>()
+    for index in 0..<Int(count) {
+      var entry = buffer[index]
+      let path = withUnsafePointer(to: &entry.f_mntonname) { pointer in
+        pointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) {
+          String(cString: $0)
+        }
+      }
+      paths.insert(path)
+    }
+    return paths
   }
 }
 

@@ -114,6 +114,16 @@ plutil -p ~/Library/Group\ Containers/group.com.apple.fskit.settings/probeOrder.
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/MacNTFS.app
 ```
 
+### 原本可以用，突然變成無法掛載
+
+先確認 appex 的簽章有沒有掉。**不要用 `CODE_SIGNING_ALLOWED=NO` 建置**，那會產生 ad-hoc 簽章、沒有 provisioning profile 的版本，覆蓋掉建置產物資料夾裡原本可用的那份，之後 `diskutil mount` 只會回報：
+
+```
+Volume on diskN failed to mount
+```
+
+重新用正常簽章建置即可恢復，系統設定裡的啟用狀態不會因此消失。
+
 ### 簽章檢查
 
 ```bash
