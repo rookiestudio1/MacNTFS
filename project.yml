@@ -1,6 +1,8 @@
 # XcodeGen 專案描述檔
 # 產生 Xcode 專案：xcodegen generate
 # 修改簽章：把 DEVELOPMENT_TEAM 換成你的 Apple Developer Team ID
+# 注意：這個值必須寫在這裡。在 Xcode 介面選 Team 只會改到產生出來的 .xcodeproj，
+#       下次執行 xcodegen generate 就會被清空，導致延伸功能失去 FSKit entitlement。
 name: MacNTFS
 options:
   bundleIdPrefix: com.rookiestudio
@@ -15,7 +17,7 @@ options:
 
 settings:
   base:
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: "XP226V36Y3"
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "5.0"
     MACOSX_DEPLOYMENT_TARGET: "15.4"

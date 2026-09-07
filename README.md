@@ -92,6 +92,36 @@ log stream --predicate 'subsystem == "com.apple.FSKit" OR subsystem == "com.rook
 pluginkit -m -p com.apple.fskit.fsmodule  # 確認延伸功能已註冊
 ```
 
+## 疑難排解
+
+### `Module com.rookiestudio.MacNTFS.NTFSFSExtension is disabled!`
+
+延伸功能已正確安裝與簽章，但還沒在系統設定裡啟用。到「系統設定 > 一般 > 登入項目與延伸功能」，找到「檔案系統模組」（File System Modules）右側的 ⓘ 按鈕，把 **MacNTFS 檔案系統延伸功能** 的開關打開。
+
+這個啟用狀態寫在 `~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist`，只能由系統設定的開關寫入，`pluginkit -e use` 對它無效。
+
+### 確認延伸功能是否被系統看見
+
+```bash
+pluginkit -m -p com.apple.fskit.fsmodule -vvv   # 應列出 com.rookiestudio.MacNTFS.NTFSFSExtension
+plutil -p ~/Library/Group\ Containers/group.com.apple.fskit.settings/enabledModules.plist   # 啟用後才會出現
+plutil -p ~/Library/Group\ Containers/group.com.apple.fskit.settings/probeOrder.plist       # 探測順序
+```
+
+若 `pluginkit` 沒列出，通常是 App 尚未被 LaunchServices 註冊：
+
+```bash
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/MacNTFS.app
+```
+
+### 簽章檢查
+
+```bash
+codesign -d --entitlements - --xml /Applications/MacNTFS.app/Contents/Extensions/NTFSFSExtension.appex | plutil -p -
+```
+
+必須看到 `com.apple.developer.fskit.fsmodule => true`，且該 appex 內要有 `Contents/embedded.provisionprofile`。缺少 provisioning profile 時 AMFI 不會載入延伸功能。
+
 ## 設計重點
 
 - **不長期持有 libntfs-3g inode**：每個操作 `ntfs_inode_open` → 操作 → `ntfs_inode_close`，避免同一 inode 重複開啟造成 MFT 記錄不一致（與 ntfs-3g FUSE 驅動相同）。
