@@ -20,8 +20,13 @@ NTFSFSExtension/            FSKit 檔案系統延伸功能（Objective-C + C，S
 Tools/ntfs-bridge-test/     以映像檔測試橋接層的 CLI
 Scripts/build-ntfs3g.sh     下載並編譯 libntfs-3g（arm64 + x86_64 universal 靜態庫）
 ThirdParty/ntfs-3g/         編譯好的 libntfs-3g.a 與標頭（LGPL 2.1）
+Scripts/make-appicon.sh     由 ntfs.png 產生 App icon 的 asset catalog
+ntfs.png                    App icon 來源圖（選單列圖示是 SF Symbol，不使用這張）
+build/                      建置產物（已在 .gitignore）
 docs/superpowers/specs/     設計文件
 ```
+
+建置產物固定在 `build/` 底下，由 `project.yml` 的 `SYMROOT` 指定，不受 Xcode 偏好設定裡的全域建置位置影響。這樣同一份專案只會有一個產物路徑；若同時存在多個路徑的 App 副本，系統設定的檔案系統延伸功能清單會出現重複項目。
 
 ## 建置
 
@@ -36,8 +41,11 @@ xcodegen generate
 Scripts/build-ntfs3g.sh
 
 # 3. 用 Xcode 開啟 MacNTFS.xcodeproj，或：
-xcodebuild -scheme MacNTFS -configuration Release build
+xcodebuild -scheme MacNTFS -configuration Debug build
+# 產物在 build/Debug/MacNTFS.app
 ```
+
+更換 App icon：把新圖放成專案根目錄的 `ntfs.png`（建議 1024x1024），再執行 `Scripts/make-appicon.sh` 重新產生，然後重建。
 
 ### 簽章（必要）
 

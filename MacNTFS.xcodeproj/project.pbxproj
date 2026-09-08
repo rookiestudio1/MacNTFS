@@ -19,6 +19,7 @@
 		6D6FF288DF3B63C3F76775BC /* NTFSVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F7A3EF5D1408FFEF46A7B69 /* NTFSVolume.swift */; };
 		8BF04C3A6A62960772A2F235 /* FSKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 25C794AC55C7794CEA6AEB14 /* FSKit.framework */; };
 		AB6CEE592AAEAF31A1884D6D /* main.c in Sources */ = {isa = PBXBuildFile; fileRef = B0447C849E3A8B968B1EF981 /* main.c */; };
+		CBDFFEF7AD85AEE7B8EC6401 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CC79F174486BC983CC048AD0 /* Assets.xcassets */; };
 		CEE489A4384FE6473D87164A /* NTFSFileSystem.m in Sources */ = {isa = PBXBuildFile; fileRef = BB58BBEAF88893B7E60B1DDE /* NTFSFileSystem.m */; };
 		CFB909F58683E98A4F51DA57 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 49FEC58939857A4D65EBE668 /* CoreFoundation.framework */; };
 		D88B90C90966B00BF2EF9761 /* ntfs_bridge.c in Sources */ = {isa = PBXBuildFile; fileRef = 9099D7160A9DE7656C711B06 /* ntfs_bridge.c */; };
@@ -65,7 +66,7 @@
 		6AB90A9826520387FD25E403 /* DiskMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskMonitor.swift; sourceTree = "<group>"; };
 		74D6F986BFBC42D1334A5879 /* NTFSVolume.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NTFSVolume.m; sourceTree = "<group>"; };
 		75431F68B44BB7116962FEB8 /* NTFSFileSystem.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NTFSFileSystem.h; sourceTree = "<group>"; };
-		8799A97DEF347F4596BA4CD7 /* ntfs-bridge-test */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = text; path = "ntfs-bridge-test"; sourceTree = BUILT_PRODUCTS_DIR; };
+		8799A97DEF347F4596BA4CD7 /* ntfs-bridge-test */ = {isa = PBXFileReference; includeInIndex = 0; path = "ntfs-bridge-test"; sourceTree = BUILT_PRODUCTS_DIR; };
 		9099D7160A9DE7656C711B06 /* ntfs_bridge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ntfs_bridge.c; sourceTree = "<group>"; };
 		95790297288FEF98B081E0F7 /* NTFSVolume.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NTFSVolume.h; sourceTree = "<group>"; };
 		A2C02552D112D5C0DE2FD5E4 /* NTFSFSExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSFSExtension.swift; sourceTree = "<group>"; };
@@ -78,6 +79,7 @@
 		BFA3C61DE05BFB766618BC4A /* MacNTFSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacNTFSApp.swift; sourceTree = "<group>"; };
 		C8EDACFB0086E09C2161968B /* NTFSBlockDevice.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NTFSBlockDevice.m; sourceTree = "<group>"; };
 		CA3517A79C23651EF0EE6EFB /* NTFSBlockDevice.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NTFSBlockDevice.h; sourceTree = "<group>"; };
+		CC79F174486BC983CC048AD0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		CF816C3E8DCFCE7FFC3D0E1E /* NTFSFSExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = NTFSFSExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D6ADCC6D3C79A7D98712A36D /* NTFSFSExtension-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "NTFSFSExtension-Bridging-Header.h"; sourceTree = "<group>"; };
 		D6CD8A1150D111ADD9BEAEAF /* VolumeListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeListView.swift; sourceTree = "<group>"; };
@@ -176,6 +178,7 @@
 		DAA1B0B6DF372C8E1D7C6B40 /* MacNTFS */ = {
 			isa = PBXGroup;
 			children = (
+				CC79F174486BC983CC048AD0 /* Assets.xcassets */,
 				BFA3C61DE05BFB766618BC4A /* MacNTFSApp.swift */,
 				C43345C209BB8980554E0004 /* Models */,
 				602BF8A817CBD875F11D24F2 /* Services */,
@@ -248,6 +251,7 @@
 			buildConfigurationList = 195DD38CE9DD0B70DB67145D /* Build configuration list for PBXNativeTarget "MacNTFS" */;
 			buildPhases = (
 				C81B272F2FDB2B46E87D1A4F /* Sources */,
+				2E97C7B3484E095B3F9B8979 /* Resources */,
 				763AEB5787A43A9A387B660E /* Embed ExtensionKit Extensions */,
 			);
 			buildRules = (
@@ -324,6 +328,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		2E97C7B3484E095B3F9B8979 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CBDFFEF7AD85AEE7B8EC6401 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
 		AA368283EF5EC04D6280563D /* 編譯 libntfs-3g（若尚未存在） */ = {
@@ -475,12 +490,14 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.4;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
+				OBJROOT = "$(SRCROOT)/build/Intermediates.noindex";
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
+				SYMROOT = "$(SRCROOT)/build";
 			};
 			name = Debug;
 		};
@@ -512,7 +529,9 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
-				GCC_PREPROCESSOR_DEFINITIONS = "ENABLE_NFCONV=1";
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"ENABLE_NFCONV=1",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/ThirdParty/ntfs-3g/include",
 					"$(SRCROOT)/NTFSFSExtension/Bridge",
@@ -522,8 +541,12 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/ThirdParty/ntfs-3g/lib";
-				OTHER_LDFLAGS = "-lntfs-3g";
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/ThirdParty/ntfs-3g/lib",
+				);
+				OTHER_LDFLAGS = (
+					"-lntfs-3g",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.rookiestudio.MacNTFS.NTFSFSExtension;
 				PRODUCT_NAME = NTFSFSExtension;
 				SDKROOT = macosx;
@@ -584,12 +607,14 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.4;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				OBJROOT = "$(SRCROOT)/build/Intermediates.noindex";
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
+				SYMROOT = "$(SRCROOT)/build";
 			};
 			name = Release;
 		};
@@ -597,7 +622,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
-				GCC_PREPROCESSOR_DEFINITIONS = "ENABLE_NFCONV=1";
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"ENABLE_NFCONV=1",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/ThirdParty/ntfs-3g/include",
 					"$(SRCROOT)/NTFSFSExtension/Bridge",
@@ -606,8 +633,12 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/ThirdParty/ntfs-3g/lib";
-				OTHER_LDFLAGS = "-lntfs-3g";
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/ThirdParty/ntfs-3g/lib",
+				);
+				OTHER_LDFLAGS = (
+					"-lntfs-3g",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.rookiestudio.ntfs-bridge-test";
 				PRODUCT_NAME = "ntfs-bridge-test";
 				SDKROOT = macosx;
@@ -637,19 +668,14 @@
 		A90B64BD6C9A3ACDBDAF3A31 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				AUTOMATION_APPLE_EVENTS = NO;
 				CLANG_WARN_DOCUMENTATION_COMMENTS = NO;
 				CODE_SIGN_ENTITLEMENTS = NTFSFSExtension/NTFSFSExtension.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
-				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
-				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
-				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
-				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
-				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
-				GCC_PREPROCESSOR_DEFINITIONS = "ENABLE_NFCONV=1";
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"ENABLE_NFCONV=1",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/ThirdParty/ntfs-3g/include",
 					"$(SRCROOT)/NTFSFSExtension/Bridge",
@@ -659,16 +685,14 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/ThirdParty/ntfs-3g/lib";
-				OTHER_LDFLAGS = "-lntfs-3g";
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/ThirdParty/ntfs-3g/lib",
+				);
+				OTHER_LDFLAGS = (
+					"-lntfs-3g",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.rookiestudio.MacNTFS.NTFSFSExtension;
 				PRODUCT_NAME = NTFSFSExtension;
-				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
-				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
-				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
-				RUNTIME_EXCEPTION_DEBUGGING_TOOL = NO;
-				RUNTIME_EXCEPTION_DISABLE_EXECUTABLE_PAGE_PROTECTION = NO;
-				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO;
 				SDKROOT = macosx;
 				SWIFT_OBJC_BRIDGING_HEADER = "NTFSFSExtension/NTFSFSExtension-Bridging-Header.h";
 			};
@@ -678,7 +702,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
-				GCC_PREPROCESSOR_DEFINITIONS = "ENABLE_NFCONV=1";
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"ENABLE_NFCONV=1",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/ThirdParty/ntfs-3g/include",
 					"$(SRCROOT)/NTFSFSExtension/Bridge",
@@ -687,8 +713,12 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/ThirdParty/ntfs-3g/lib";
-				OTHER_LDFLAGS = "-lntfs-3g";
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/ThirdParty/ntfs-3g/lib",
+				);
+				OTHER_LDFLAGS = (
+					"-lntfs-3g",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.rookiestudio.ntfs-bridge-test";
 				PRODUCT_NAME = "ntfs-bridge-test";
 				SDKROOT = macosx;
