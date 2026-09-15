@@ -418,7 +418,9 @@ static const NSTimeInterval NTFSMetadataFlushInterval = 5.0;
   BOOL writable = !ntfsb_is_readonly(_vol);
   ntfsb_statfs_info sf;
   self.clusterSize = (ntfsb_statfs(_vol, &sf) == 0) ? sf.cluster_size : 0;
-  self.koioEnabled = (self.clusterSize > 0) && !writable;
+  // 讀寫掛載也走 KOIO：診斷 spike（設計文件第 14 節）已證實乾淨系統狀態下
+  // blockmap 內配置叢集／補零不會與 kernel lifs 鎖形成死結。
+  self.koioEnabled = (self.clusterSize > 0);
   os_log_info(NTFSVolumeLog(), "kernel offloaded I/O %{public}s（叢集 %u 位元組）",
               self.koioEnabled ? "啟用" : "停用", self.clusterSize);
   [self.lock unlock];

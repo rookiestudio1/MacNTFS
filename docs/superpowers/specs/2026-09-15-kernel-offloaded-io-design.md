@@ -1,7 +1,7 @@
 # Kernel Offloaded I/O（KOIO）設計文件
 
 日期：2026-09-15
-狀態：橋接層已完成並通過測試；FSKit 層啟用因 kernel 死結暫時關閉（見第 13 節）。
+狀態：橋接層已完成並通過測試；FSKit 層對唯讀與讀寫掛載都已啟用（第 13 節的死結經第 14 節診斷後無法重現）。
 `ntfsb_koio_eligible` 實作簽章改為 `(const ntfsb_attr *, uint32_t cluster_size)`，
 且空的常駐檔案視為合格（blockmap 時轉非常駐，因為 kernel 只在 lookup/create/getattr 取旗標）。
 

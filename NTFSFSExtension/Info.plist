@@ -97,7 +97,7 @@
 		<key>FSSupportsGenericURLResources</key>
 		<false/>
 		<key>FSSupportsKernelOffloadedIO</key>
-		<false/>
+		<true/>
 		<key>FSSupportsPathURLs</key>
 		<false/>
 		<key>FSSupportsServerURLs</key>
