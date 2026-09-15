@@ -13,6 +13,7 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #include "file_device.h"
 #include "ntfs_fairlock.h"
@@ -102,6 +103,52 @@ static file_device_stats stats_delta(const file_device_stats *before,
   return d;
 }
 
+
+// MARK: - 假 kernel（kernel offloaded I/O）
+//
+// 真正的 kernel 拿到 extent 後直接對裝置 I/O，不經橋接層也不經 file_device 的統計，
+// 所以 KOIO 項目的「讀次數／寫次數／放大倍率」只反映橋接層自己的中繼資料流量。
+
+#define BENCH_KOIO_CHUNK (1024ull * 1024)  ///< kernel 一次 I/O 的大小
+
+typedef struct koio_extents {
+  ntfsb_extent items[32];
+  int count;
+} koio_extents;
+
+static int koio_collect(void *ctx, const ntfsb_extent *e) {
+  koio_extents *l = ctx;
+  if (l->count < 32) {
+    l->items[l->count++] = *e;
+  }
+  return 0;
+}
+
+/// 對 [offset, offset+len) 的 extent 直接讀或寫映像檔。回傳 0 或 -1。
+static int koio_kernel_io(file_device *dev, const koio_extents *l, int64_t offset, int64_t len,
+                          uint8_t *buf, bool write) {
+  for (int i = 0; i < l->count; i++) {
+    const ntfsb_extent *e = &l->items[i];
+    int64_t lo = e->logical > offset ? e->logical : offset;
+    int64_t hi = (e->logical + e->length < offset + len) ? e->logical + e->length : offset + len;
+    if (hi <= lo) {
+      continue;
+    }
+    if (e->zero_fill) {
+      if (write) {
+        return -1;
+      }
+      memset(buf + (lo - offset), 0, (size_t)(hi - lo));
+      continue;
+    }
+    ssize_t n = write ? pwrite(dev->fd, buf + (lo - offset), (size_t)(hi - lo), e->physical + (lo - e->logical))
+                      : pread(dev->fd, buf + (lo - offset), (size_t)(hi - lo), e->physical + (lo - e->logical));
+    if (n != hi - lo) {
+      return -1;
+    }
+  }
+  return 0;
+}
 
 // MARK: - 混合負載下的中繼資料延遲
 //
@@ -237,7 +284,8 @@ int bench_run(const char *image_path, uint32_t block_size) {
          BENCH_RAND_COUNT, BENCH_RAND_CHUNK, BENCH_SMALL_COUNT, BENCH_SMALL_SIZE,
          BENCH_RELOOKUP_FILES, BENCH_RELOOKUP_ROUNDS);
 
-  uint8_t *buf = malloc(BENCH_SEQ_CHUNK);
+  // 緩衝區要容得下 KOIO 的 1 MB 區塊
+  uint8_t *buf = malloc(BENCH_KOIO_CHUNK > BENCH_SEQ_CHUNK ? BENCH_KOIO_CHUNK : BENCH_SEQ_CHUNK);
   if (!buf) {
     fprintf(stderr, "配置緩衝區失敗\n");
     ntfsb_umount(vol);
@@ -246,7 +294,7 @@ int bench_run(const char *image_path, uint32_t block_size) {
   }
   memset(buf, 0xA5, BENCH_SEQ_CHUNK);
 
-  bench_result results[7];
+  bench_result results[9];
   int n = 0;
   int rc = 0;
   file_device_stats before, after;
@@ -350,6 +398,86 @@ int bench_run(const char *image_path, uint32_t block_size) {
   results[n].name = "循序覆寫";
   results[n].logical_bytes = BENCH_SEQ_BYTES;
   results[n].ops = BENCH_SEQ_BYTES / BENCH_SEQ_CHUNK;
+  results[n].op_unit = NULL;
+  results[n].io = stats_delta(&before, &after);
+  n++;
+
+  // ---- 3b. KOIO 循序寫：kernel 以 1 MB 為單位 blockmap → 直接寫裝置 → complete_io ----
+  uint64_t koio_mft = 0;
+  rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "bench-koio.dat", NTFSB_TYPE_FILE, NULL, &koio_mft);
+  if (rc) {
+    fprintf(stderr, "建立 bench-koio.dat 失敗：rc=%d\n", rc);
+    goto fail;
+  }
+  before = dev.stats;
+  t0 = now_seconds();
+  {
+    int ferr = 0;
+    ntfsb_file *f = ntfsb_file_open(vol, koio_mft, &ferr);
+    if (!f) {
+      fprintf(stderr, "開啟 handle 失敗：errno=%d\n", ferr);
+      rc = 1;
+      goto fail;
+    }
+    for (uint64_t off = 0; off < BENCH_SEQ_BYTES; off += BENCH_KOIO_CHUNK) {
+      koio_extents l = {0};
+      int brc = ntfsb_blockmap(vol, koio_mft, (int64_t)off, BENCH_KOIO_CHUNK, true, koio_collect, &l);
+      if (brc == 0) {
+        brc = koio_kernel_io(&dev, &l, (int64_t)off, BENCH_KOIO_CHUNK, buf, true);
+      }
+      if (brc == 0) {
+        brc = ntfsb_complete_io(vol, koio_mft, (int64_t)off, BENCH_KOIO_CHUNK, true, false, true);
+      }
+      if (brc) {
+        fprintf(stderr, "KOIO 循序寫失敗 offset=%llu rc=%d\n", off, brc);
+        ntfsb_file_close(f);
+        rc = 1;
+        goto fail;
+      }
+    }
+    ntfsb_file_close(f);
+  }
+  ntfsb_sync(vol);
+  results[n].seconds = now_seconds() - t0;
+  after = dev.stats;
+  results[n].name = "KOIO 循序寫";
+  results[n].logical_bytes = BENCH_SEQ_BYTES;
+  results[n].ops = BENCH_SEQ_BYTES / BENCH_KOIO_CHUNK;
+  results[n].op_unit = NULL;
+  results[n].io = stats_delta(&before, &after);
+  n++;
+
+  // ---- 3c. KOIO 循序讀 ----
+  before = dev.stats;
+  t0 = now_seconds();
+  {
+    int ferr = 0;
+    ntfsb_file *f = ntfsb_file_open(vol, koio_mft, &ferr);
+    if (!f) {
+      fprintf(stderr, "開啟 handle 失敗：errno=%d\n", ferr);
+      rc = 1;
+      goto fail;
+    }
+    for (uint64_t off = 0; off < BENCH_SEQ_BYTES; off += BENCH_KOIO_CHUNK) {
+      koio_extents l = {0};
+      int brc = ntfsb_blockmap(vol, koio_mft, (int64_t)off, BENCH_KOIO_CHUNK, false, koio_collect, &l);
+      if (brc == 0) {
+        brc = koio_kernel_io(&dev, &l, (int64_t)off, BENCH_KOIO_CHUNK, buf, false);
+      }
+      if (brc) {
+        fprintf(stderr, "KOIO 循序讀失敗 offset=%llu rc=%d\n", off, brc);
+        ntfsb_file_close(f);
+        rc = 1;
+        goto fail;
+      }
+    }
+    ntfsb_file_close(f);
+  }
+  results[n].seconds = now_seconds() - t0;
+  after = dev.stats;
+  results[n].name = "KOIO 循序讀";
+  results[n].logical_bytes = BENCH_SEQ_BYTES;
+  results[n].ops = BENCH_SEQ_BYTES / BENCH_KOIO_CHUNK;
   results[n].op_unit = NULL;
   results[n].io = stats_delta(&before, &after);
   n++;
