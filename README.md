@@ -94,7 +94,16 @@ Scripts/make-test-image.sh 512 /tmp/bench.img   # 每次量測都用全新映像
 build/Debug/ntfs-bridge-test bench /tmp/bench.img
 ```
 
-量測循序寫入、循序讀取、隨機讀取、小檔建立、目錄走訪五項。
+量測循序寫入、循序讀取、循序覆寫、隨機讀取、小檔建立、目錄走訪六項。
+
+要歸因某個階段的裝置流量，可以設 `BENCH_TRACE` 把「小檔建立」階段的每次裝置 I/O
+記成 `r|w <offset> <length>`：
+
+```bash
+BENCH_TRACE=/tmp/small.trace build/Debug/ntfs-bridge-test bench /tmp/bench.img
+```
+
+再依大小與位移分組，就能看出流量究竟花在哪個 NTFS 結構上。
 
 **看「裝置讀次數／寫次數／放大倍率」，不要只看耗時。** 映像檔通常整份落在 page cache 裡，耗時量到的主要是 CPU 與呼叫次數的成本；裝置 I/O 計數則是確定性的，前後對照不會有雜訊。放大倍率＝裝置實際搬運位元組數 ÷ 邏輯要求位元組數，橋接層每多做一次 MFT 讀寫或 runlist 重建都會直接反映在這個數字上。
 

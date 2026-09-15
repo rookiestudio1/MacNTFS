@@ -341,7 +341,14 @@ static s64 ntfsb_dev_pread(struct ntfs_device *dev, void *buf, s64 count, s64 of
     s64 cur = offset + done;
     s64 aligned = cur - (cur % bs);
     s64 head = cur - aligned;
-    s64 chunk = NTFSB_BOUNCE_SIZE;
+    // 只讀「涵蓋剩餘請求」所需的對齊長度。先前這裡無條件讀滿整個 bounce buffer，
+    // 使得每個未對齊的小讀取（例如查詢 $MFT 的 $BITMAP）都要搬 256 KB。
+    // p->size 是 block_count * block_size，所以三個來源都是 bs 的整數倍。
+    s64 need = head + (count - done);
+    s64 chunk = ((need + bs - 1) / bs) * bs;
+    if (chunk > NTFSB_BOUNCE_SIZE) {
+      chunk = NTFSB_BOUNCE_SIZE;
+    }
     if (aligned + chunk > p->size) {
       chunk = p->size - aligned;
     }

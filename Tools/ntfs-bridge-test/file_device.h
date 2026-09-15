@@ -11,6 +11,7 @@
 #define FILE_DEVICE_H
 
 #include <stdint.h>
+#include <stdio.h>
 #include "ntfs_bridge.h"
 
 /// 裝置 I/O 統計
@@ -27,7 +28,12 @@ typedef struct file_device {
   int fd;
   int64_t size;
   file_device_stats stats;
+  /// 非 NULL 時把每次 I/O 記成一行 "r|w <offset> <length>"，用來歸因裝置流量
+  FILE *trace;
 } file_device;
+
+/// 開始 / 停止記錄 I/O 軌跡。path 為 NULL 表示停止。
+int file_device_trace(file_device *d, const char *path);
 
 /// 開啟映像檔。成功回傳 0，失敗回傳 -1 並設定 errno。
 int file_device_open(file_device *d, const char *path);

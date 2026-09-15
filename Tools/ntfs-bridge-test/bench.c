@@ -321,6 +321,13 @@ int bench_run(const char *image_path, uint32_t block_size) {
     goto fail;
   }
   before = dev.stats;
+  // 設定 BENCH_TRACE=<路徑> 可把這個階段的每次裝置 I/O 記下來，用於歸因流量
+  {
+    const char *trace_path = getenv("BENCH_TRACE");
+    if (trace_path && file_device_trace(&dev, trace_path) != 0) {
+      fprintf(stderr, "無法開啟軌跡檔 %s\n", trace_path);
+    }
+  }
   t0 = now_seconds();
   for (int i = 0; i < BENCH_SMALL_COUNT; i++) {
     char name[64];
@@ -349,6 +356,7 @@ int bench_run(const char *image_path, uint32_t block_size) {
   ntfsb_sync(vol);
   results[n].seconds = now_seconds() - t0;
   after = dev.stats;
+  file_device_trace(&dev, NULL);
   results[n].name = "小檔建立";
   results[n].logical_bytes = 0;
   results[n].ops = BENCH_SMALL_COUNT;

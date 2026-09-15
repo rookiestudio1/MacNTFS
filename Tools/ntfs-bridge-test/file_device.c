@@ -18,6 +18,9 @@ static int64_t file_pread(void *ctx, void *buf, int64_t count, int64_t offset) {
   }
   d->stats.read_calls++;
   d->stats.read_bytes += (uint64_t)r;
+  if (d->trace) {
+    fprintf(d->trace, "r %lld %lld\n", (long long)offset, (long long)r);
+  }
   return (int64_t)r;
 }
 
@@ -29,6 +32,9 @@ static int64_t file_pwrite(void *ctx, const void *buf, int64_t count, int64_t of
   }
   d->stats.write_calls++;
   d->stats.write_bytes += (uint64_t)r;
+  if (d->trace) {
+    fprintf(d->trace, "w %lld %lld\n", (long long)offset, (long long)r);
+  }
   return (int64_t)r;
 }
 
@@ -72,6 +78,18 @@ ntfsb_device_callbacks file_device_callbacks(file_device *d, uint32_t block_size
     .sync = file_sync,
   };
   return cb;
+}
+
+int file_device_trace(file_device *d, const char *path) {
+  if (d->trace) {
+    fclose(d->trace);
+    d->trace = NULL;
+  }
+  if (!path) {
+    return 0;
+  }
+  d->trace = fopen(path, "w");
+  return d->trace ? 0 : -1;
 }
 
 void file_device_reset_stats(file_device *d) {

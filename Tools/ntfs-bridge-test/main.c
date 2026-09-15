@@ -322,6 +322,66 @@ int main(int argc, char **argv) {
   rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "other.txt", &found, NULL);
   CHECK(rc == -ENOENT, "刪除後檔案消失");
 
+  // ---- 未對齊讀取不應放大 ----
+  // ntfsb_dev_pread 的未對齊路徑會透過 bounce buffer 讀取；它只該讀涵蓋請求所需
+  // 的對齊範圍，不是每次都讀滿整個 buffer。
+  {
+    uint64_t umft = 0;
+    rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "unaligned.bin", NTFSB_TYPE_FILE, NULL, &umft);
+    CHECK(rc == 0, "建立 unaligned.bin (rc=%d)", rc);
+    char big[8192];
+    memset(big, 'U', sizeof(big));
+    // 要夠大才會是 non-resident，讀取才會真的碰到裝置
+    int64_t w = ntfsb_write(vol, umft, 0, big, sizeof(big));
+    CHECK(w == (int64_t)sizeof(big), "寫入 8 KB (w=%lld)", (long long)w);
+    rc = ntfsb_sync(vol);
+    CHECK(rc == 0, "sync 後再讀 (rc=%d)", rc);
+
+    char small[100];
+    file_device_reset_stats(&dev);
+    int64_t r = ntfsb_read(vol, umft, 0, small, sizeof(small));
+    uint64_t got_bytes = dev.stats.read_bytes;
+    CHECK(r == (int64_t)sizeof(small) && small[0] == 'U', "讀取 100 位元組 (r=%lld)", (long long)r);
+    // 100 位元組的請求最多只該讀一兩個磁區；放寬到 8 KB 仍能抓出 256 KB 的放大
+    CHECK(got_bytes <= 8192,
+          "未對齊小讀取不放大：裝置讀取 %llu 位元組（應 <= 8192）",
+          (unsigned long long)got_bytes);
+  }
+
+  // ---- 大於 bounce buffer 的未對齊讀取（走多輪迴圈）----
+  {
+    uint64_t lmft = 0;
+    rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "bigunaligned.bin", NTFSB_TYPE_FILE, NULL, &lmft);
+    CHECK(rc == 0, "建立 bigunaligned.bin (rc=%d)", rc);
+    const size_t big_size = 1024 * 1024;
+    uint8_t *src = malloc(big_size);
+    uint8_t *dst = malloc(big_size);
+    CHECK(src != NULL && dst != NULL, "配置 1 MB 測試緩衝區");
+    if (src && dst) {
+      for (size_t i = 0; i < big_size; i++) {
+        src[i] = (uint8_t)(i * 31 + 7);
+      }
+      int64_t w = ntfsb_write(vol, lmft, 0, src, big_size);
+      CHECK(w == (int64_t)big_size, "寫入 1 MB (w=%lld)", (long long)w);
+      rc = ntfsb_sync(vol);
+
+      // 從未對齊位移讀取 300 KB：超過 256 KB 的 bounce buffer，會走多輪迴圈
+      const size_t want = 300 * 1024;
+      file_device_reset_stats(&dev);
+      int64_t r = ntfsb_read(vol, lmft, 1, dst, want);
+      uint64_t got_bytes = dev.stats.read_bytes;
+      CHECK(r == (int64_t)want, "未對齊讀取 300 KB (r=%lld)", (long long)r);
+      CHECK(r == (int64_t)want && memcmp(dst, src + 1, want) == 0,
+            "未對齊大讀取內容正確");
+      // 最多多讀頭尾各一個磁區
+      CHECK(got_bytes <= want + 2 * 512,
+            "未對齊大讀取不放大：裝置讀取 %llu 位元組（應 <= %zu）",
+            (unsigned long long)got_bytes, want + 2 * 512);
+    }
+    free(src);
+    free(dst);
+  }
+
   // ---- 持久 handle ----
   {
     uint64_t hmft = 0;
