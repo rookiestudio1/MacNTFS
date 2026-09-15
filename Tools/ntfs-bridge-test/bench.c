@@ -183,13 +183,24 @@ int bench_run(const char *image_path, uint32_t block_size) {
   }
   before = dev.stats;
   t0 = now_seconds();
-  for (uint64_t off = 0; off < BENCH_SEQ_BYTES; off += BENCH_SEQ_CHUNK) {
-    int64_t w = ntfsb_write(vol, big_mft, (int64_t)off, buf, BENCH_SEQ_CHUNK);
-    if (w != (int64_t)BENCH_SEQ_CHUNK) {
-      fprintf(stderr, "循序寫入失敗 offset=%llu rc=%lld\n", off, (long long)w);
+  {
+    int ferr = 0;
+    ntfsb_file *f = ntfsb_file_open(vol, big_mft, &ferr);
+    if (!f) {
+      fprintf(stderr, "開啟 handle 失敗：errno=%d\n", ferr);
       rc = 1;
       goto fail;
     }
+    for (uint64_t off = 0; off < BENCH_SEQ_BYTES; off += BENCH_SEQ_CHUNK) {
+      int64_t w = ntfsb_file_write(f, (int64_t)off, buf, BENCH_SEQ_CHUNK);
+      if (w != (int64_t)BENCH_SEQ_CHUNK) {
+        fprintf(stderr, "循序寫入失敗 offset=%llu rc=%lld\n", off, (long long)w);
+        ntfsb_file_close(f);
+        rc = 1;
+        goto fail;
+      }
+    }
+    ntfsb_file_close(f);
   }
   ntfsb_sync(vol);
   results[n].seconds = now_seconds() - t0;
@@ -204,13 +215,24 @@ int bench_run(const char *image_path, uint32_t block_size) {
   // ---- 2. 循序讀取 ----
   before = dev.stats;
   t0 = now_seconds();
-  for (uint64_t off = 0; off < BENCH_SEQ_BYTES; off += BENCH_SEQ_CHUNK) {
-    int64_t r = ntfsb_read(vol, big_mft, (int64_t)off, buf, BENCH_SEQ_CHUNK);
-    if (r != (int64_t)BENCH_SEQ_CHUNK) {
-      fprintf(stderr, "循序讀取失敗 offset=%llu rc=%lld\n", off, (long long)r);
+  {
+    int ferr = 0;
+    ntfsb_file *f = ntfsb_file_open(vol, big_mft, &ferr);
+    if (!f) {
+      fprintf(stderr, "開啟 handle 失敗：errno=%d\n", ferr);
       rc = 1;
       goto fail;
     }
+    for (uint64_t off = 0; off < BENCH_SEQ_BYTES; off += BENCH_SEQ_CHUNK) {
+      int64_t r = ntfsb_file_read(f, (int64_t)off, buf, BENCH_SEQ_CHUNK);
+      if (r != (int64_t)BENCH_SEQ_CHUNK) {
+        fprintf(stderr, "循序讀取失敗 offset=%llu rc=%lld\n", off, (long long)r);
+        ntfsb_file_close(f);
+        rc = 1;
+        goto fail;
+      }
+    }
+    ntfsb_file_close(f);
   }
   results[n].seconds = now_seconds() - t0;
   after = dev.stats;
@@ -225,13 +247,24 @@ int bench_run(const char *image_path, uint32_t block_size) {
   // 與「循序寫入」對照可以把「配置新叢集的成本」和「每次寫入的中繼資料成本」分開。
   before = dev.stats;
   t0 = now_seconds();
-  for (uint64_t off = 0; off < BENCH_SEQ_BYTES; off += BENCH_SEQ_CHUNK) {
-    int64_t w = ntfsb_write(vol, big_mft, (int64_t)off, buf, BENCH_SEQ_CHUNK);
-    if (w != (int64_t)BENCH_SEQ_CHUNK) {
-      fprintf(stderr, "循序覆寫失敗 offset=%llu rc=%lld\n", off, (long long)w);
+  {
+    int ferr = 0;
+    ntfsb_file *f = ntfsb_file_open(vol, big_mft, &ferr);
+    if (!f) {
+      fprintf(stderr, "開啟 handle 失敗：errno=%d\n", ferr);
       rc = 1;
       goto fail;
     }
+    for (uint64_t off = 0; off < BENCH_SEQ_BYTES; off += BENCH_SEQ_CHUNK) {
+      int64_t w = ntfsb_file_write(f, (int64_t)off, buf, BENCH_SEQ_CHUNK);
+      if (w != (int64_t)BENCH_SEQ_CHUNK) {
+        fprintf(stderr, "循序覆寫失敗 offset=%llu rc=%lld\n", off, (long long)w);
+        ntfsb_file_close(f);
+        rc = 1;
+        goto fail;
+      }
+    }
+    ntfsb_file_close(f);
   }
   ntfsb_sync(vol);
   results[n].seconds = now_seconds() - t0;
@@ -249,15 +282,26 @@ int bench_run(const char *image_path, uint32_t block_size) {
     uint64_t max_off = BENCH_SEQ_BYTES - BENCH_RAND_CHUNK;
     before = dev.stats;
     t0 = now_seconds();
-    for (int i = 0; i < BENCH_RAND_COUNT; i++) {
-      uint64_t off = bench_rand(&state) % max_off;
-      off -= off % BENCH_RAND_CHUNK;
-      int64_t r = ntfsb_read(vol, big_mft, (int64_t)off, buf, BENCH_RAND_CHUNK);
-      if (r != BENCH_RAND_CHUNK) {
-        fprintf(stderr, "隨機讀取失敗 offset=%llu rc=%lld\n", off, (long long)r);
+    {
+      int ferr = 0;
+      ntfsb_file *f = ntfsb_file_open(vol, big_mft, &ferr);
+      if (!f) {
+        fprintf(stderr, "開啟 handle 失敗：errno=%d\n", ferr);
         rc = 1;
         goto fail;
       }
+      for (int i = 0; i < BENCH_RAND_COUNT; i++) {
+        uint64_t off = bench_rand(&state) % max_off;
+        off -= off % BENCH_RAND_CHUNK;
+        int64_t r = ntfsb_file_read(f, (int64_t)off, buf, BENCH_RAND_CHUNK);
+        if (r != BENCH_RAND_CHUNK) {
+          fprintf(stderr, "隨機讀取失敗 offset=%llu rc=%lld\n", off, (long long)r);
+          ntfsb_file_close(f);
+          rc = 1;
+          goto fail;
+        }
+      }
+      ntfsb_file_close(f);
     }
     results[n].seconds = now_seconds() - t0;
     after = dev.stats;
@@ -287,7 +331,15 @@ int bench_run(const char *image_path, uint32_t block_size) {
       fprintf(stderr, "建立 %s 失敗：rc=%d\n", name, rc);
       goto fail;
     }
-    int64_t w = ntfsb_write(vol, mft, 0, buf, BENCH_SMALL_SIZE);
+    int ferr = 0;
+    ntfsb_file *f = ntfsb_file_open(vol, mft, &ferr);
+    if (!f) {
+      fprintf(stderr, "開啟 %s 的 handle 失敗：errno=%d\n", name, ferr);
+      rc = 1;
+      goto fail;
+    }
+    int64_t w = ntfsb_file_write(f, 0, buf, BENCH_SMALL_SIZE);
+    ntfsb_file_close(f);
     if (w != BENCH_SMALL_SIZE) {
       fprintf(stderr, "寫入 %s 失敗：rc=%lld\n", name, (long long)w);
       rc = 1;

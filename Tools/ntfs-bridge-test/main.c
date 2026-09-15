@@ -322,6 +322,69 @@ int main(int argc, char **argv) {
   rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "other.txt", &found, NULL);
   CHECK(rc == -ENOENT, "刪除後檔案消失");
 
+  // ---- 持久 handle ----
+  {
+    uint64_t hmft = 0;
+    rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "handle.bin", NTFSB_TYPE_FILE, NULL, &hmft);
+    CHECK(rc == 0, "建立 handle.bin (rc=%d)", rc);
+
+    int herr = 0;
+    ntfsb_file *hf = ntfsb_file_open(vol, hmft, &herr);
+    CHECK(hf != NULL, "開啟持久 handle (errno=%d)", herr);
+
+    // 分多次寫入，中繼資料應延後到 flush / close 才寫回
+    char chunk[4096];
+    memset(chunk, 'H', sizeof(chunk));
+    int64_t total = 0;
+    for (int i = 0; i < 8; i++) {
+      int64_t w = ntfsb_file_write(hf, total, chunk, sizeof(chunk));
+      if (w != (int64_t)sizeof(chunk)) {
+        break;
+      }
+      total += w;
+    }
+    CHECK(total == 8 * (int64_t)sizeof(chunk), "handle 分次寫入 %lld 位元組", (long long)total);
+
+    // handle 開著時 getattr 必須看到即時大小，否則 Finder 會看到舊值
+    ntfsb_attr ha;
+    rc = ntfsb_getattr(vol, hmft, &ha);
+    CHECK(rc == 0 && ha.size == (uint64_t)total,
+          "handle 開啟時 getattr 看到即時大小 (rc=%d size=%llu 應為 %lld)",
+          rc, (unsigned long long)ha.size, (long long)total);
+
+    // 一般讀取路徑應自動改用 handle，不能另開一份 inode
+    char verify[4096];
+    int64_t r = ntfsb_read(vol, hmft, 4096, verify, sizeof(verify));
+    CHECK(r == (int64_t)sizeof(verify) && verify[0] == 'H' && verify[4095] == 'H',
+          "handle 開啟時 ntfsb_read 走 handle 路徑 (r=%lld)", (long long)r);
+
+    // truncate 也必須沿用 handle 的 ntfs_attr
+    rc = ntfsb_truncate(vol, hmft, 5000);
+    CHECK(rc == 0, "handle 開啟時 truncate (rc=%d)", rc);
+    rc = ntfsb_getattr(vol, hmft, &ha);
+    CHECK(rc == 0 && ha.size == 5000, "truncate 後大小為 5000（實得 %llu）",
+          (unsigned long long)ha.size);
+
+    // 引用計數：重複開啟共用同一個 handle
+    ntfsb_file *hf2 = ntfsb_file_open(vol, hmft, &herr);
+    CHECK(hf2 == hf, "重複開啟共用同一個 handle");
+    rc = ntfsb_file_close(hf2);
+    CHECK(rc == 0, "釋放第二個引用 (rc=%d)", rc);
+    // 第一個引用還在，寫入仍應成功
+    int64_t w2 = ntfsb_file_write(hf, 0, "Z", 1);
+    CHECK(w2 == 1, "釋放第二個引用後 handle 仍可用 (w=%lld)", (long long)w2);
+
+    rc = ntfsb_file_close(hf);
+    CHECK(rc == 0, "關閉持久 handle (rc=%d)", rc);
+
+    // 關閉後回到一般路徑，資料與大小都要正確
+    rc = ntfsb_getattr(vol, hmft, &ha);
+    CHECK(rc == 0 && ha.size == 5000, "關閉後大小仍為 5000（實得 %llu）",
+          (unsigned long long)ha.size);
+    r = ntfsb_read(vol, hmft, 0, verify, 1);
+    CHECK(r == 1 && verify[0] == 'Z', "關閉後內容正確 (r=%lld)", (long long)r);
+  }
+
   // 留下一個檔案供外部工具驗證
   uint64_t keep = 0;
   rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "keep.txt", NTFSB_TYPE_FILE, NULL, &keep);
@@ -343,6 +406,20 @@ int main(int argc, char **argv) {
   CHECK(vol != NULL && ntfsb_is_readonly(vol), "唯讀重新掛載");
   if (vol) {
     CHECK(!strcmp(ntfsb_label(vol), "BridgeTest"), "卷標持久化：%s", ntfsb_label(vol));
+
+    // handle 的延後中繼資料必須在 close 時寫回，重新掛載後大小與內容都要正確
+    uint64_t hmft2 = 0;
+    rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "handle.bin", &hmft2, NULL);
+    CHECK(rc == 0, "handle.bin 持久化 (rc=%d)", rc);
+    if (rc == 0) {
+      ntfsb_attr ha2;
+      rc = ntfsb_getattr(vol, hmft2, &ha2);
+      CHECK(rc == 0 && ha2.size == 5000,
+            "handle.bin 大小持久化為 5000（實得 %llu）", (unsigned long long)ha2.size);
+      char vb[2];
+      int64_t r2 = ntfsb_read(vol, hmft2, 0, vb, 1);
+      CHECK(r2 == 1 && vb[0] == 'Z', "handle.bin 內容持久化 (r=%lld)", (long long)r2);
+    }
     rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "keep.txt", &found, NULL);
     CHECK(rc == 0, "keep.txt 持久化");
     r = ntfsb_read(vol, found, 0, rbuf, 5);

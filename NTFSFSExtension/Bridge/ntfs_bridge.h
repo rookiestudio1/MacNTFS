@@ -5,8 +5,10 @@
 //  libntfs-3g 的純 C 橋接層。
 //  設計原則：
 //  - 對外只暴露不透明的 ntfsb_volume，以 MFT 編號（mft_no）作為檔案身分。
-//  - 每個操作內部自行 ntfs_inode_open / ntfs_inode_close，不長期持有 ntfs_inode，
-//    避免同一 inode 被重複開啟造成 MFT 記錄不一致（與 ntfs-3g FUSE 驅動相同做法）。
+//  - 預設每個操作內部自行 ntfs_inode_open / ntfs_inode_close，不長期持有 ntfs_inode。
+//    需要跨多次讀寫時改用 ntfsb_file handle（見下方「持久 handle」）；handle 存在期間
+//    橋接層會讓所有針對該 mft_no 的操作共用同一份 ntfs_inode，因為 libntfs-3g 的
+//    ntfs_inode_open 沒有引用計數，重複開啟會得到兩份互相覆寫的 MFT 記錄。
 //  - 所有函式回傳 0 表示成功、負 errno 表示失敗（讀寫類回傳位元組數或負 errno）。
 //  - libntfs-3g 並非執行緒安全，呼叫端必須自行序列化對同一 ntfsb_volume 的呼叫。
 //
@@ -26,6 +28,9 @@ extern "C" {
 
 /// 不透明的已掛載卷
 typedef struct ntfsb_volume ntfsb_volume;
+
+/// 不透明的持久檔案 handle
+typedef struct ntfsb_file ntfsb_file;
 
 /// 呼叫端提供的區塊裝置存取介面。
 /// pread/pwrite 收到的 offset 與 count 一定是 block_size 的整數倍（橋接層會處理對齊）。
@@ -186,6 +191,40 @@ int64_t ntfsb_write(ntfsb_volume *vol, uint64_t mft_no, int64_t offset, const vo
 
 /// 調整檔案大小
 int ntfsb_truncate(ntfsb_volume *vol, uint64_t mft_no, int64_t size);
+
+// MARK: - 持久 handle
+//
+// 一般路徑（ntfsb_read / ntfsb_write）每次呼叫都要重開 inode 與 ntfs_attr，
+// 並在關閉時把 MFT record 寫回磁碟。開檔期間改持有 handle 可以省掉這些成本：
+// runlist 只建立一次，中繼資料延後到 ntfsb_file_flush / ntfsb_file_close 才寫回。
+//
+// handle 存在期間，ntfsb_read / ntfsb_write / ntfsb_truncate / ntfsb_getattr
+// 會自動改用 handle 持有的 inode，因此呼叫端不必改寫既有路徑；
+// 但呼叫端必須保證 handle 的建立與關閉成對，且不可跨卷使用。
+
+/// 開啟持久 handle。只接受一般檔案：目錄回傳 EISDIR、reparse point 回傳 EOPNOTSUPP。
+/// 同一個 mft_no 重複開啟會共用同一個 handle（內部引用計數）。
+/// 失敗回傳 NULL 並在 out_err 填入 errno。
+ntfsb_file *ntfsb_file_open(ntfsb_volume *vol, uint64_t mft_no, int *out_err);
+
+/// 經由 handle 讀取。回傳實際讀取位元組數或負 errno。
+int64_t ntfsb_file_read(ntfsb_file *file, int64_t offset, void *buf, size_t len);
+
+/// 經由 handle 寫入。時間戳只更新在記憶體中，MFT record 不會立即寫回。
+/// 回傳實際寫入位元組數或負 errno。
+int64_t ntfsb_file_write(ntfsb_file *file, int64_t offset, const void *buf, size_t len);
+
+/// 把延後的中繼資料（大小、時間戳）寫回。沒有變更時不做任何事。
+int ntfsb_file_flush(ntfsb_file *file);
+
+/// 關閉 handle（引用計數歸零時才真正關閉，並寫回延後的中繼資料）。
+int ntfsb_file_close(ntfsb_file *file);
+
+/// 把卷上所有 handle 延後的中繼資料寫回。ntfsb_sync 會自行呼叫。
+int ntfsb_flush_all(ntfsb_volume *vol);
+
+/// 是否有 handle 帶著尚未寫回的中繼資料（供呼叫端決定要不要啟動定時 flush）
+bool ntfsb_has_dirty_files(const ntfsb_volume *vol);
 
 /// 建立檔案 / 目錄 / 符號連結。type 只接受 FILE、DIR、SYMLINK、FIFO、SOCK。
 /// symlink_target 只在 type == SYMLINK 時使用。

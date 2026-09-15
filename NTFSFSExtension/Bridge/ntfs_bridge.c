@@ -49,7 +49,54 @@ struct ntfsb_volume {
   ntfs_volume *vol;
   char *label;        ///< UTF-8 卷標快取
   char *mnt_point;    ///< 解析 junction 時使用的掛載點
+  ntfsb_file *open_files;  ///< 目前持有的持久 handle（見下方說明）
 };
+
+// MARK: - 持久檔案 handle
+//
+// libntfs-3g 的 ntfs_inode_open 沒有引用計數：命中 nidata 快取時會把項目從快取「移除」，
+// 沒命中就真的再開一份。因此同一個 mft_no 若被開啟兩次，會得到兩份獨立的 ntfs_inode，
+// 兩份都可能是 dirty，最後關閉的那份會覆蓋先關的。
+//
+// 為了能跨多次讀寫持有 inode 與 ntfs_attr（省掉每次重開與 runlist 重建，
+// 也省掉 ntfs_inode_close 觸發的 MFT 寫回），必須保證 handle 存在期間，
+// 橋接層所有對該 mft_no 的操作都用同一份 inode。做法是讓 ntfsb_open_inode
+// 先查 handle 串列，命中就「借用」handle 持有的 inode，對應的 ntfsb_close_inode
+// 則不真的關閉。
+//
+// handle 只給一般檔案（ntfsb_file_open 會拒絕目錄與 reparse point），
+// 所以 ntfs_dir_parent_inode 回傳的目錄 inode 不可能和 handle 衝突。
+// 同時開啟的檔案通常只有個位數，串列線性搜尋即可。
+
+struct ntfsb_file {
+  ntfsb_file *next;
+  ntfsb_volume *v;
+  uint64_t mft_no;
+  ntfs_inode *ni;
+  ntfs_attr *na;
+  int refs;          ///< 同一個檔案被開啟多次時共用同一個 handle
+  bool meta_dirty;   ///< 有尚未寫回的中繼資料（大小、時間戳）
+};
+
+/// 找出 mft_no 對應的 handle，沒有則回傳 NULL
+static ntfsb_file *ntfsb_find_file(ntfsb_volume *v, uint64_t mft_no) {
+  for (ntfsb_file *f = v->open_files; f; f = f->next) {
+    if (f->mft_no == mft_no) {
+      return f;
+    }
+  }
+  return NULL;
+}
+
+/// 這個 inode 是否由某個 handle 持有
+static bool ntfsb_inode_is_held(ntfsb_volume *v, const ntfs_inode *ni) {
+  for (ntfsb_file *f = v->open_files; f; f = f->next) {
+    if (f->ni == ni) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /// 裝置私有資料
 typedef struct ntfsb_dev_priv {
@@ -138,9 +185,27 @@ static ntfsb_type ntfsb_type_of_inode(ntfs_inode *ni, ntfs_attr **out_na) {
   return NTFSB_TYPE_FILE;
 }
 
-/// 開啟 inode，失敗回傳 NULL 並設定 errno
+/// 開啟 inode，失敗回傳 NULL 並設定 errno。
+/// 若該檔案目前有持久 handle，直接借用 handle 持有的 inode（不可自行關閉）。
 static ntfs_inode *ntfsb_open_inode(ntfsb_volume *v, uint64_t mft_no) {
+  ntfsb_file *f = ntfsb_find_file(v, mft_no);
+  if (f) {
+    return f->ni;
+  }
   return ntfs_inode_open(v->vol, (MFT_REF)mft_no);
+}
+
+/// 與 ntfsb_open_inode 配對的關閉。借用自 handle 的 inode 不會真的關閉。
+/// 對於不是經由 ntfsb_open_inode 取得的 inode（例如 ntfs_dir_parent_inode 的回傳值）
+/// 一樣安全：找不到持有者就走一般關閉。
+static int ntfsb_close_inode(ntfsb_volume *v, ntfs_inode *ni) {
+  if (!ni) {
+    return 0;
+  }
+  if (ntfsb_inode_is_held(v, ni)) {
+    return 0;
+  }
+  return ntfs_inode_close(ni);
 }
 
 // MARK: - 裝置操作（ntfs_device_operations）
@@ -631,6 +696,11 @@ int ntfsb_umount(ntfsb_volume *v) {
     return -EINVAL;
   }
   int res = 0;
+  // 卸載前先關掉所有殘留的 handle，把延後的中繼資料寫回
+  while (v->open_files) {
+    v->open_files->refs = 1;
+    ntfsb_file_close(v->open_files);
+  }
   if (v->vol) {
     struct ntfs_device *dev = v->vol->dev;
     ntfsb_dev_priv *priv = dev ? ntfsb_dev(dev) : NULL;
@@ -719,6 +789,8 @@ int ntfsb_sync(ntfsb_volume *v) {
   if (NVolReadOnly(v->vol)) {
     return 0;
   }
+  // 持久 handle 上延後的中繼資料要先寫回，才輪到 $MFT / $Bitmap
+  ntfsb_flush_all(v);
   // 將 $MFT / $Bitmap 等內部 inode 的變更寫回，再同步裝置
   if (v->vol->mft_ni) {
     ntfs_inode_sync(v->vol->mft_ni);
@@ -795,7 +867,7 @@ int ntfsb_getattr(ntfsb_volume *v, uint64_t mft_no, ntfsb_attr *out) {
   out->ctime = ntfs2timespec(ni->last_mft_change_time);
   out->btime = ntfs2timespec(ni->creation_time);
   int res = 0;
-  if (ntfs_inode_close(ni)) {
+  if (ntfsb_close_inode(v, ni)) {
     res = ntfsb_neg_errno();
   }
   return res;
@@ -826,21 +898,21 @@ int ntfsb_lookup(ntfsb_volume *v,
     ntfs_inode *parent = ntfs_dir_parent_inode(dir_ni);
     if (!parent) {
       res = ntfsb_neg_errno();
-      ntfs_inode_close(dir_ni);
+      ntfsb_close_inode(v, dir_ni);
       return res;
     }
     inum = parent->mft_no;
-    ntfs_inode_close(parent);
+    ntfsb_close_inode(v, parent);
   } else {
     inum = ntfs_inode_lookup_by_mbsname(dir_ni, name);
     if (inum == (u64)-1) {
       res = ntfsb_neg_errno();
-      ntfs_inode_close(dir_ni);
+      ntfsb_close_inode(v, dir_ni);
       return res;
     }
     inum = MREF(inum);
   }
-  ntfs_inode_close(dir_ni);
+  ntfsb_close_inode(v, dir_ni);
   *out_mft_no = inum;
   if (out_type) {
     ntfs_inode *ni = ntfsb_open_inode(v, inum);
@@ -848,7 +920,7 @@ int ntfsb_lookup(ntfsb_volume *v,
       return ntfsb_neg_errno();
     }
     *out_type = ntfsb_type_of_inode(ni, NULL);
-    ntfs_inode_close(ni);
+    ntfsb_close_inode(v, ni);
   }
   return 0;
 }
@@ -871,9 +943,9 @@ int ntfsb_parent(ntfsb_volume *v, uint64_t mft_no, uint64_t *out_parent) {
     res = ntfsb_neg_errno();
   } else {
     *out_parent = parent->mft_no;
-    ntfs_inode_close(parent);
+    ntfsb_close_inode(v, parent);
   }
-  ntfs_inode_close(ni);
+  ntfsb_close_inode(v, ni);
   return res;
 }
 
@@ -975,7 +1047,7 @@ int ntfsb_readdir(ntfsb_volume *v,
     return ntfsb_neg_errno();
   }
   if (!(dir_ni->mrec->flags & MFT_RECORD_IS_DIRECTORY)) {
-    ntfs_inode_close(dir_ni);
+    ntfsb_close_inode(v, dir_ni);
     return -ENOTDIR;
   }
   ntfsb_readdir_ctx c = {
@@ -997,10 +1069,198 @@ int ntfsb_readdir(ntfsb_volume *v,
   }
   free(c.pending_name);
   *pos = c.resume_pos;
-  if (ntfs_inode_close(dir_ni) && !res) {
+  if (ntfsb_close_inode(v, dir_ni) && !res) {
     res = ntfsb_neg_errno();
   }
   return res;
+}
+
+// MARK: - 持久 handle
+
+ntfsb_file *ntfsb_file_open(ntfsb_volume *v, uint64_t mft_no, int *out_err) {
+  if (out_err) {
+    *out_err = 0;
+  }
+  if (!v || !v->vol) {
+    if (out_err) {
+      *out_err = EINVAL;
+    }
+    return NULL;
+  }
+  // 同一個檔案被開啟多次時共用同一個 handle，確保只有一份 ntfs_inode
+  ntfsb_file *existing = ntfsb_find_file(v, mft_no);
+  if (existing) {
+    existing->refs++;
+    return existing;
+  }
+
+  ntfs_inode *ni = ntfs_inode_open(v->vol, (MFT_REF)mft_no);
+  if (!ni) {
+    if (out_err) {
+      *out_err = errno ? errno : EIO;
+    }
+    return NULL;
+  }
+  int err = 0;
+  if (ni->mrec->flags & MFT_RECORD_IS_DIRECTORY) {
+    err = EISDIR;
+  } else if (ni->flags & FILE_ATTR_REPARSE_POINT) {
+    err = EOPNOTSUPP;
+  }
+  ntfs_attr *na = NULL;
+  if (!err) {
+    na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+    if (!na) {
+      err = errno ? errno : EIO;
+    }
+  }
+  ntfsb_file *f = NULL;
+  if (!err) {
+    f = calloc(1, sizeof(*f));
+    if (!f) {
+      err = ENOMEM;
+    }
+  }
+  if (err) {
+    if (na) {
+      ntfs_attr_close(na);
+    }
+    ntfs_inode_close(ni);
+    if (out_err) {
+      *out_err = err;
+    }
+    return NULL;
+  }
+
+  f->v = v;
+  f->mft_no = mft_no;
+  f->ni = ni;
+  f->na = na;
+  f->refs = 1;
+  f->meta_dirty = false;
+  f->next = v->open_files;
+  v->open_files = f;
+  return f;
+}
+
+int64_t ntfsb_file_read(ntfsb_file *f, int64_t offset, void *buf, size_t len) {
+  if (!f || !buf || offset < 0) {
+    return -EINVAL;
+  }
+  if (len == 0) {
+    return 0;
+  }
+  s64 max_read = f->na->data_size;
+  if (offset >= max_read) {
+    return 0;
+  }
+  s64 size = (s64)len;
+  if (offset + size > max_read) {
+    size = max_read - offset;
+  }
+  s64 total = 0;
+  while (size > 0) {
+    s64 ret = ntfs_attr_pread(f->na, offset + total, size, (uint8_t *)buf + total);
+    if (ret <= 0 || ret > size) {
+      return (ret < 0) ? ntfsb_neg_errno() : -EIO;
+    }
+    size -= ret;
+    total += ret;
+  }
+  return total;
+}
+
+int64_t ntfsb_file_write(ntfsb_file *f, int64_t offset, const void *buf, size_t len) {
+  if (!f || !buf || offset < 0) {
+    return -EINVAL;
+  }
+  if (NVolReadOnly(f->v->vol)) {
+    return -EROFS;
+  }
+  if (len == 0) {
+    return 0;
+  }
+  s64 size = (s64)len;
+  s64 total = 0;
+  while (size > 0) {
+    s64 ret = ntfs_attr_pwrite(f->na, offset + total, size, (const uint8_t *)buf + total);
+    if (ret <= 0) {
+      return ntfsb_neg_errno();
+    }
+    size -= ret;
+    total += ret;
+  }
+  f->ni->flags |= FILE_ATTR_ARCHIVE;
+  // 只更新記憶體中的時間戳（不做 I/O）；MFT record 的寫回延後到 flush 或 close。
+  ntfs_inode_update_times(f->ni, NTFS_UPDATE_MCTIME);
+  f->meta_dirty = true;
+  return total;
+}
+
+int ntfsb_file_flush(ntfsb_file *f) {
+  if (!f) {
+    return -EINVAL;
+  }
+  if (!f->meta_dirty) {
+    return 0;
+  }
+  if (ntfs_inode_sync(f->ni)) {
+    return ntfsb_neg_errno();
+  }
+  f->meta_dirty = false;
+  return 0;
+}
+
+int ntfsb_file_close(ntfsb_file *f) {
+  if (!f) {
+    return -EINVAL;
+  }
+  if (--f->refs > 0) {
+    return 0;
+  }
+  ntfsb_volume *v = f->v;
+  // 先從串列移除，後面的 ntfs_inode_close 才不會被 ntfsb_close_inode 攔下來
+  ntfsb_file **pp = &v->open_files;
+  while (*pp && *pp != f) {
+    pp = &(*pp)->next;
+  }
+  if (*pp) {
+    *pp = f->next;
+  }
+  int res = 0;
+  ntfs_attr_close(f->na);
+  // ntfs_inode_close 內部會在 dirty 時自行 ntfs_inode_sync
+  if (ntfs_inode_close(f->ni)) {
+    res = ntfsb_neg_errno();
+  }
+  free(f);
+  return res;
+}
+
+int ntfsb_flush_all(ntfsb_volume *v) {
+  if (!v || !v->vol) {
+    return -EINVAL;
+  }
+  int res = 0;
+  for (ntfsb_file *f = v->open_files; f; f = f->next) {
+    int rc = ntfsb_file_flush(f);
+    if (rc && !res) {
+      res = rc;
+    }
+  }
+  return res;
+}
+
+bool ntfsb_has_dirty_files(const ntfsb_volume *v) {
+  if (!v) {
+    return false;
+  }
+  for (const ntfsb_file *f = v->open_files; f; f = f->next) {
+    if (f->meta_dirty) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // MARK: - 讀寫
@@ -1011,6 +1271,10 @@ int64_t ntfsb_read(ntfsb_volume *v, uint64_t mft_no, int64_t offset, void *buf, 
   }
   if (len == 0) {
     return 0;
+  }
+  ntfsb_file *held = ntfsb_find_file(v, mft_no);
+  if (held) {
+    return ntfsb_file_read(held, offset, buf, len);
   }
   ntfs_inode *ni = ntfsb_open_inode(v, mft_no);
   if (!ni) {
@@ -1056,7 +1320,7 @@ int64_t ntfsb_read(ntfsb_volume *v, uint64_t mft_no, int64_t offset, void *buf, 
     res = total;
   }
 exit:
-  if (ntfs_inode_close(ni) && res >= 0) {
+  if (ntfsb_close_inode(v, ni) && res >= 0) {
     res = ntfsb_neg_errno();
   }
   return res;
@@ -1071,6 +1335,10 @@ int64_t ntfsb_write(ntfsb_volume *v, uint64_t mft_no, int64_t offset, const void
   }
   if (len == 0) {
     return 0;
+  }
+  ntfsb_file *held = ntfsb_find_file(v, mft_no);
+  if (held) {
+    return ntfsb_file_write(held, offset, buf, len);
   }
   ntfs_inode *ni = ntfsb_open_inode(v, mft_no);
   if (!ni) {
@@ -1109,7 +1377,7 @@ int64_t ntfsb_write(ntfsb_volume *v, uint64_t mft_no, int64_t offset, const void
     ntfs_inode_update_times(ni, NTFS_UPDATE_MCTIME);
   }
 exit:
-  if (ntfs_inode_close(ni) && res >= 0) {
+  if (ntfsb_close_inode(v, ni) && res >= 0) {
     res = ntfsb_neg_errno();
   }
   return res;
@@ -1140,7 +1408,10 @@ int ntfsb_truncate(ntfsb_volume *v, uint64_t mft_no, int64_t size) {
     goto exit;
   }
   {
-    ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+    // 有 handle 時必須沿用 handle 的 ntfs_attr，不能另開一份，
+    // 否則兩份 runlist 會分歧
+    ntfsb_file *held = ntfsb_find_file(v, mft_no);
+    ntfs_attr *na = held ? held->na : ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
     if (!na) {
       res = ntfsb_neg_errno();
       goto exit;
@@ -1155,16 +1426,21 @@ int ntfsb_truncate(ntfsb_volume *v, uint64_t mft_no, int64_t size) {
     } else if (ntfs_attr_truncate(na, size)) {
       res = ntfsb_neg_errno();
     }
-    ntfs_attr_close(na);
+    if (!held) {
+      ntfs_attr_close(na);
+    }
     if (!res) {
       if (oldsize != size) {
         ni->flags |= FILE_ATTR_ARCHIVE;
       }
       ntfs_inode_update_times(ni, NTFS_UPDATE_MCTIME);
+      if (held) {
+        held->meta_dirty = true;
+      }
     }
   }
 exit:
-  if (ntfs_inode_close(ni) && !res) {
+  if (ntfsb_close_inode(v, ni) && !res) {
     res = ntfsb_neg_errno();
   }
   return res;
@@ -1253,7 +1529,7 @@ int ntfsb_create(ntfsb_volume *v,
   }
 exit:
   free(uname);
-  if (ntfs_inode_close(dir_ni) && !res) {
+  if (ntfsb_close_inode(v, dir_ni) && !res) {
     res = ntfsb_neg_errno();
   }
   return res;
@@ -1283,7 +1559,7 @@ int ntfsb_unlink(ntfsb_volume *v, uint64_t dir_mft_no, const char *name, uint64_
   ntfs_inode *dir_ni = ntfsb_open_inode(v, dir_mft_no);
   if (!dir_ni) {
     res = ntfsb_neg_errno();
-    ntfs_inode_close(ni);
+    ntfsb_close_inode(v, ni);
     free(uname);
     return res;
   }
@@ -1306,10 +1582,10 @@ int ntfsb_unlink(ntfsb_volume *v, uint64_t dir_mft_no, const char *name, uint64_
   ni = NULL;
   dir_ni = NULL;
 exit_close:
-  if (dir_ni && ntfs_inode_close(dir_ni) && !res) {
+  if (dir_ni && ntfsb_close_inode(v, dir_ni) && !res) {
     res = ntfsb_neg_errno();
   }
-  if (ni && ntfs_inode_close(ni) && !res) {
+  if (ni && ntfsb_close_inode(v, ni) && !res) {
     res = ntfsb_neg_errno();
   }
   free(uname);
@@ -1341,7 +1617,7 @@ int ntfsb_link(ntfsb_volume *v, uint64_t mft_no, uint64_t dir_mft_no, const char
   ntfs_inode *dir_ni = ntfsb_open_inode(v, dir_mft_no);
   if (!dir_ni) {
     res = ntfsb_neg_errno();
-    ntfs_inode_close(ni);
+    ntfsb_close_inode(v, ni);
     free(uname);
     return res;
   }
@@ -1355,10 +1631,10 @@ int ntfsb_link(ntfsb_volume *v, uint64_t mft_no, uint64_t dir_mft_no, const char
     ntfs_inode_update_times(dir_ni, NTFS_UPDATE_MCTIME);
   }
   // 必須先關閉 dir_ni，否則 ni 的檔名同步可能找不到索引項目
-  if (ntfs_inode_close(dir_ni) && !res) {
+  if (ntfsb_close_inode(v, dir_ni) && !res) {
     res = ntfsb_neg_errno();
   }
-  if (ntfs_inode_close(ni) && !res) {
+  if (ntfsb_close_inode(v, ni) && !res) {
     res = ntfsb_neg_errno();
   }
   free(uname);
@@ -1469,7 +1745,7 @@ int ntfsb_readlink(ntfsb_volume *v, uint64_t mft_no, char *buf, size_t bufsize) 
     ntfs_attr_close(na);
   }
 exit:
-  if (ntfs_inode_close(ni) && res >= 0) {
+  if (ntfsb_close_inode(v, ni) && res >= 0) {
     res = ntfsb_neg_errno();
   }
   return res;
@@ -1512,7 +1788,7 @@ int ntfsb_set_times(ntfsb_volume *v,
     ntfs_inode_update_times(ni, NTFS_UPDATE_CTIME);
   }
   int res = 0;
-  if (ntfs_inode_close(ni)) {
+  if (ntfsb_close_inode(v, ni)) {
     res = ntfsb_neg_errno();
   }
   return res;
@@ -1545,7 +1821,7 @@ int ntfsb_set_flags(ntfsb_volume *v, uint64_t mft_no, int set_readonly, int set_
   NInoFileNameSetDirty(ni);
   ntfs_inode_update_times(ni, NTFS_UPDATE_CTIME);
   int res = 0;
-  if (ntfs_inode_close(ni)) {
+  if (ntfsb_close_inode(v, ni)) {
     res = ntfsb_neg_errno();
   }
   return res;
@@ -1589,7 +1865,7 @@ int ntfsb_xattr_list(ntfsb_volume *v, uint64_t mft_no, ntfsb_xattr_list_cb callb
   }
   ntfs_attr_put_search_ctx(actx);
 exit:
-  if (ntfs_inode_close(ni) && !res) {
+  if (ntfsb_close_inode(v, ni) && !res) {
     res = ntfsb_neg_errno();
   }
   return res;
@@ -1657,7 +1933,7 @@ int64_t ntfsb_xattr_get(ntfsb_volume *v, uint64_t mft_no, const char *name, void
   }
   ntfs_attr_close(na);
 exit:
-  if (ntfs_inode_close(ni) && res >= 0) {
+  if (ntfsb_close_inode(v, ni) && res >= 0) {
     res = ntfsb_neg_errno();
   }
   return res;
@@ -1727,7 +2003,7 @@ int ntfsb_xattr_set(ntfsb_volume *v,
   }
 exit:
   free(uname);
-  if (ntfs_inode_close(ni) && !res) {
+  if (ntfsb_close_inode(v, ni) && !res) {
     res = ntfsb_neg_errno();
   }
   return res;
@@ -1758,7 +2034,7 @@ int ntfsb_xattr_remove(ntfsb_volume *v, uint64_t mft_no, const char *name) {
     ntfs_inode_update_times(ni, NTFS_UPDATE_CTIME);
   }
 exit:
-  if (ntfs_inode_close(ni) && !res) {
+  if (ntfsb_close_inode(v, ni) && !res) {
     res = ntfsb_neg_errno();
   }
   return res;
