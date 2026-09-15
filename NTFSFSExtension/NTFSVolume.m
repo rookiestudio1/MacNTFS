@@ -58,6 +58,10 @@ static inline struct timespec NTFSTimespec(struct timespec ts) {
 @property (nonatomic) BOOL wantReadOnly;
 /// 定時把 handle 上延後的中繼資料寫回（見 startFlushTimer）
 @property (nonatomic, nullable) dispatch_source_t flushTimer;
+/// 掛載時從 statfs 取得，KOIO 合格判定用
+@property (nonatomic) uint32_t clusterSize;
+/// 里程碑 1：只在唯讀掛載放行 KOIO；讀寫掛載驗證完成後改為一律放行
+@property (nonatomic) BOOL koioEnabled;
 @end
 
 @implementation NTFSVolume {
@@ -238,7 +242,7 @@ static const NSTimeInterval NTFSMetadataFlushInterval = 5.0;
   attrs.addedTime = NTFSTimespec(a->btime);
   attrs.backupTime = (struct timespec){0, 0};
   attrs.supportsLimitedXAttrs = NO;
-  attrs.inhibitKernelOffloadedIO = YES;
+  attrs.inhibitKernelOffloadedIO = !(self.koioEnabled && ntfsb_koio_eligible(a, self.clusterSize));
   return attrs;
 }
 
@@ -412,6 +416,11 @@ static const NSTimeInterval NTFSMetadataFlushInterval = 5.0;
   self.rootItem = [self itemForMFTNo:NTFSB_ROOT_MFT_NO type:NTFSB_TYPE_DIR];
   NTFSItem *root = self.rootItem;
   BOOL writable = !ntfsb_is_readonly(_vol);
+  ntfsb_statfs_info sf;
+  self.clusterSize = (ntfsb_statfs(_vol, &sf) == 0) ? sf.cluster_size : 0;
+  self.koioEnabled = (self.clusterSize > 0) && !writable;
+  os_log_info(NTFSVolumeLog(), "kernel offloaded I/O %{public}s（叢集 %u 位元組）",
+              self.koioEnabled ? "啟用" : "停用", self.clusterSize);
   [self.lock unlock];
   if (writable) {
     [self startFlushTimer];
@@ -1009,6 +1018,91 @@ static int NTFSEnumCallback(void *context, const char *name, size_t len, uint64_
     return;
   }
   reply((size_t)put, nil);
+}
+
+// MARK: - FSVolumeKernelOffloadedIOOperations
+
+/// blockmap 回呼的上下文：把橋接層的 extent 轉交給 FSExtentPacker
+typedef struct {
+  __unsafe_unretained FSExtentPacker *packer;
+  __unsafe_unretained FSBlockDeviceResource *resource;
+} NTFSPackContext;
+
+static int NTFSPackExtent(void *context, const ntfsb_extent *e) {
+  NTFSPackContext *c = context;
+  BOOL more = [c->packer packExtentWithResource:c->resource
+                                           type:e->zero_fill ? FSExtentTypeZeroFill : FSExtentTypeData
+                                  logicalOffset:e->logical
+                                 physicalOffset:e->physical
+                                         length:(size_t)e->length];
+  return more ? 0 : 1;
+}
+
+- (void)blockmapFile:(FSItem *)file
+              offset:(off_t)offset
+              length:(size_t)length
+               flags:(FSBlockmapFlags)flags
+         operationID:(FSOperationID)operationID
+              packer:(FSExtentPacker *)packer
+        replyHandler:(void (^)(NSError *_Nullable))reply {
+  NTFSItem *ni = [self ntfsItem:file];
+  if (!ni) {
+    reply(NTFSError(EINVAL));
+    return;
+  }
+  BOOL forWrite = (flags & FSBlockmapFlagsWrite) != 0;
+  NTFSPackContext ctx = {packer, self.device.resource};
+  [self.lock lock];
+  int rc = _vol ? ntfsb_blockmap(_vol, ni.mftNo, offset, (int64_t)length, forWrite, NTFSPackExtent, &ctx)
+                : -ENXIO;
+  [self.lock unlock];
+  if (rc) {
+    os_log_error(NTFSVolumeLog(), "blockmap mft=%llu off=%lld len=%zu write=%d 失敗 rc=%d",
+                 ni.mftNo, (long long)offset, length, forWrite, rc);
+  }
+  reply(rc ? NTFSError(rc) : nil);
+}
+
+- (void)completeIOForFile:(FSItem *)file
+                   offset:(off_t)offset
+                   length:(size_t)length
+                   status:(NSError *)status
+                    flags:(FSCompleteIOFlags)flags
+              operationID:(FSOperationID)operationID
+             replyHandler:(void (^)(NSError *_Nullable))reply {
+  NTFSItem *ni = [self ntfsItem:file];
+  if (!ni) {
+    reply(NTFSError(EINVAL));
+    return;
+  }
+  [self.lock lock];
+  int rc = _vol ? ntfsb_complete_io(_vol, ni.mftNo, offset, (int64_t)length,
+                                    (flags & FSCompleteIOFlagsWrite) != 0,
+                                    status != nil,
+                                    (flags & FSCompleteIOFlagsAsync) != 0)
+                : -ENXIO;
+  [self.lock unlock];
+  if (rc) {
+    os_log_error(NTFSVolumeLog(), "completeIO mft=%llu off=%lld len=%zu 失敗 rc=%d",
+                 ni.mftNo, (long long)offset, length, rc);
+  }
+  reply(rc ? NTFSError(rc) : nil);
+}
+
+// 不機會性提供 extent：直接轉呼叫既有的建立與查找
+- (void)createFileNamed:(FSFileName *)name
+            inDirectory:(FSItem *)directory
+             attributes:(FSItemSetAttributesRequest *)attributes
+                 packer:(FSExtentPacker *)packer
+           replyHandler:(void (^)(FSItem *_Nullable, FSFileName *_Nullable, NSError *_Nullable))reply {
+  [self createItemNamed:name type:FSItemTypeFile inDirectory:directory attributes:attributes replyHandler:reply];
+}
+
+- (void)lookupItemNamed:(FSFileName *)name
+            inDirectory:(FSItem *)directory
+                 packer:(FSExtentPacker *)packer
+           replyHandler:(void (^)(FSItem *_Nullable, FSFileName *_Nullable, NSError *_Nullable))reply {
+  [self lookupItemNamed:name inDirectory:directory replyHandler:reply];
 }
 
 // MARK: - FSVolumeXattrOperations

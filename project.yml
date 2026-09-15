@@ -120,7 +120,7 @@ targets:
           FSShortName: ntfs3g
           FSSupportsBlockResources: true
           FSSupportsGenericURLResources: false
-          FSSupportsKernelOffloadedIO: false
+          FSSupportsKernelOffloadedIO: true
           FSSupportsPathURLs: false
           FSSupportsServerURLs: false
     entitlements:

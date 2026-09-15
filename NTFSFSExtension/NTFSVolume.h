@@ -19,6 +19,7 @@ extern NSString *const NTFSFSShortName;
                                   FSVolumePathConfOperations,
                                   FSVolumeOpenCloseOperations,
                                   FSVolumeReadWriteOperations,
+                                  FSVolumeKernelOffloadedIOOperations,
                                   FSVolumeXattrOperations,
                                   FSVolumeRenameOperations>
 
