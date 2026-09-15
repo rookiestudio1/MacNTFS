@@ -21,6 +21,7 @@
 typedef struct mem_device {
   uint8_t *disk;
   int64_t size;
+  uint64_t writes;  ///< pwrite 呼叫次數
 } mem_device;
 
 static int64_t mem_pread(void *ctx, void *buf, int64_t count, int64_t offset) {
@@ -38,6 +39,7 @@ static int64_t mem_pwrite(void *ctx, const void *buf, int64_t count, int64_t off
     return -1;
   }
   memcpy(d->disk + offset, buf, (size_t)count);
+  d->writes++;
   return count;
 }
 
@@ -55,8 +57,56 @@ static uint64_t bct_rand(uint64_t *s) {
   return x;
 }
 
-int bcache_test_run(void) {
+#define BCT_CHECK(cond, msg)                                    \
+  do {                                                          \
+    if (!(cond)) {                                              \
+      failures++;                                               \
+      fprintf(stderr, "失敗 [%s:%d] %s\n", __FILE__, __LINE__, msg); \
+    } else {                                                    \
+      printf("通過：%s\n", msg);                                 \
+    }                                                           \
+  } while (0)
+
+/// flush_range：範圍內髒行落盤且失效，範圍外髒行保持不動
+static int bcache_test_flush_range(void) {
   int failures = 0;
+  mem_device dev = { .disk = calloc(1, BCT_SIZE), .size = BCT_SIZE };
+  ntfsb_device_callbacks cb = {
+    .context = &dev,
+    .block_size = BCT_BLOCK,
+    .block_count = BCT_BLOCKS,
+    .writable = true,
+    .pread = mem_pread,
+    .pwrite = mem_pwrite,
+    .sync = mem_sync,
+  };
+  ntfsb_bcache *c = ntfsb_bcache_create(&cb, BCT_SIZE);
+  const int64_t L = NTFSB_BCACHE_LINE;
+  uint8_t a[NTFSB_BCACHE_LINE], b[NTFSB_BCACHE_LINE], out[NTFSB_BCACHE_LINE];
+  memset(a, 0xA1, sizeof(a));
+  memset(b, 0xB2, sizeof(b));
+  // 行 3 與行 10 各寫一行（都留在快取裡）
+  BCT_CHECK(ntfsb_bcache_pwrite(c, a, L, 3 * L) == L, "flush_range：寫入行 3");
+  BCT_CHECK(ntfsb_bcache_pwrite(c, b, L, 10 * L) == L, "flush_range：寫入行 10");
+  uint64_t writes_before = dev.writes;
+  BCT_CHECK(ntfsb_bcache_flush_range(c, 3 * L, L) == 0, "flush_range：行 3");
+  BCT_CHECK(dev.writes == writes_before + 1, "flush_range：只寫回一行");
+  BCT_CHECK(memcmp(dev.disk + 3 * L, a, L) == 0, "flush_range：行 3 已在裝置上");
+  BCT_CHECK(memcmp(dev.disk + 10 * L, b, L) != 0, "flush_range：行 10 仍未落盤");
+  // 失效：直接改裝置內容後再經快取讀，必須看到新內容
+  memset(dev.disk + 3 * L, 0xC3, L);
+  BCT_CHECK(ntfsb_bcache_pread(c, out, L, 3 * L) == L && out[0] == 0xC3,
+            "flush_range：行 3 已失效，重讀拿到裝置新內容");
+  // 超大範圍（超過快取行數）也要正確，且走逐槽掃描而不是逐行查雜湊
+  BCT_CHECK(ntfsb_bcache_flush_range(c, 0, BCT_SIZE) == 0, "flush_range：整個裝置");
+  BCT_CHECK(memcmp(dev.disk + 10 * L, b, L) == 0, "flush_range：行 10 這次落盤了");
+  ntfsb_bcache_free(c);
+  free(dev.disk);
+  return failures;
+}
+
+int bcache_test_run(void) {
+  int failures = bcache_test_flush_range();
   mem_device dev = { .disk = calloc(1, BCT_SIZE), .size = BCT_SIZE };
   uint8_t *ref = calloc(1, BCT_SIZE);
   uint8_t *buf = malloc(BCT_SIZE);

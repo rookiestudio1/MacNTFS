@@ -57,4 +57,9 @@ int64_t ntfsb_bcache_pwrite(ntfsb_bcache *c, const void *buf, int64_t count, int
 /// 把所有髒行寫回裝置。成功回傳 0，失敗回傳 -1 並設定 errno。
 int ntfsb_bcache_flush(ntfsb_bcache *c);
 
+/// 把 [offset, offset+count) 涵蓋的髒行寫回，並讓範圍內所有行（髒或乾淨）失效。
+/// 供 kernel offloaded I/O 使用：交給 kernel 直接 I/O 的範圍，快取不能再持有任何副本。
+/// offset 與 count 必須對齊 block_size。成功回傳 0，失敗回傳 -1 並設定 errno。
+int ntfsb_bcache_flush_range(ntfsb_bcache *c, int64_t offset, int64_t count);
+
 #endif /* NTFS_BLOCKCACHE_H */

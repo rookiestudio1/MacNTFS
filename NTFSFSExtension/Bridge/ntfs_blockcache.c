@@ -334,6 +334,32 @@ int ntfsb_bcache_flush(ntfsb_bcache *c) {
   return 0;
 }
 
+int ntfsb_bcache_flush_range(ntfsb_bcache *c, int64_t offset, int64_t count) {
+  if (!c || offset < 0 || count < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (c->line_count == 0 || count == 0) {
+    return 0;
+  }
+  int64_t first = offset >> c->line_shift;
+  int64_t last = (offset + count - 1) >> c->line_shift;
+  // 範圍比快取還大時逐槽掃比逐行查雜湊便宜（一個 10 GB 的 extent 有兩百多萬行）
+  if (last - first + 1 <= c->line_count) {
+    return bc_invalidate_range(c, offset, count, true);
+  }
+  for (int32_t s = 0; s < c->line_count; s++) {
+    int64_t ln = c->lines[s].line_no;
+    if (ln == BC_EMPTY || ln < first || ln > last) {
+      continue;
+    }
+    if (bc_invalidate_range(c, ln << c->line_shift, c->line_size, true) != 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
 // MARK: - 讀寫
 
 int64_t ntfsb_bcache_pread(ntfsb_bcache *c, void *buf, int64_t count, int64_t offset) {
