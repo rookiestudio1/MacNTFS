@@ -675,6 +675,9 @@ int main(int argc, char **argv) {
     CHECK(r == 5 && memcmp(rbuf, "kept\n", 5) == 0, "keep.txt 內容持久化");
     w = ntfsb_write(vol, found, 0, "x", 1);
     CHECK(w == -EROFS, "唯讀卷寫入回傳 EROFS (w=%lld)", (long long)w);
+
+    // KOIO 寫入的大小、initialized_size 與內容也要持久化
+    failures += koio_test_verify_after_remount(vol);
     ntfsb_umount(vol);
   }
 

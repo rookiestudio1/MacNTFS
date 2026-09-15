@@ -13,4 +13,7 @@
 /// 回傳失敗項目數。
 int koio_test_run(ntfsb_volume *vol, file_device *dev);
 
+/// 卸載重掛後檢查 KOIO 寫入的檔案內容與大小仍正確。回傳失敗項目數。
+int koio_test_verify_after_remount(ntfsb_volume *vol);
+
 #endif /* KOIO_TEST_H */

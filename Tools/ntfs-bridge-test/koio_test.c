@@ -410,3 +410,30 @@ int koio_test_run(ntfsb_volume *vol, file_device *dev) {
   test_cache_coherency(vol, dev);
   return failures;
 }
+
+int koio_test_verify_after_remount(ntfsb_volume *vol) {
+  failures = 0;
+  printf("---- KOIO（重掛後）----\n");
+  uint64_t mft = 0;
+  int rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "koio_write_1.bin", &mft, NULL);
+  CHECK(rc == 0, "重掛：找到 koio_write_1.bin (rc=%d)", rc);
+  if (rc) {
+    return failures;
+  }
+  ntfsb_attr a;
+  CHECK(ntfsb_getattr(vol, mft, &a) == 0 && a.size == (6u << 20) && a.init_size == (5u << 20),
+        "重掛：size=6 MB init=5 MB (size=%llu init=%llu)",
+        (unsigned long long)a.size, (unsigned long long)a.init_size);
+  CHECK(ntfsb_koio_eligible(&a, CLUSTER), "重掛：仍合格");
+  uint8_t *buf = malloc(1 << 20);
+  int64_t r = ntfsb_read(vol, mft, 3 << 20, buf, 1 << 20);
+  bool ok = (r == (1 << 20));
+  for (int64_t i = 0; ok && i < r; i += 1021) {
+    ok = buf[i] == (uint8_t)(0x80 + (i % 97));
+  }
+  CHECK(ok, "重掛：kernel 寫入的段內容正確");
+  r = ntfsb_read(vol, mft, 1 << 20, buf, 4096);
+  CHECK(r == 4096 && buf[0] == 0 && buf[4095] == 0, "重掛：補零段仍是零");
+  free(buf);
+  return failures;
+}
