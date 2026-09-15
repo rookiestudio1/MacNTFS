@@ -168,7 +168,7 @@ int bench_run(const char *image_path, uint32_t block_size) {
   }
   memset(buf, 0xA5, BENCH_SEQ_CHUNK);
 
-  bench_result results[5];
+  bench_result results[6];
   int n = 0;
   int rc = 0;
   file_device_stats before, after;
@@ -221,7 +221,29 @@ int bench_run(const char *image_path, uint32_t block_size) {
   results[n].io = stats_delta(&before, &after);
   n++;
 
-  // ---- 3. 隨機讀取 ----
+  // ---- 3. 循序覆寫（檔案已配置，大小不變）----
+  // 與「循序寫入」對照可以把「配置新叢集的成本」和「每次寫入的中繼資料成本」分開。
+  before = dev.stats;
+  t0 = now_seconds();
+  for (uint64_t off = 0; off < BENCH_SEQ_BYTES; off += BENCH_SEQ_CHUNK) {
+    int64_t w = ntfsb_write(vol, big_mft, (int64_t)off, buf, BENCH_SEQ_CHUNK);
+    if (w != (int64_t)BENCH_SEQ_CHUNK) {
+      fprintf(stderr, "循序覆寫失敗 offset=%llu rc=%lld\n", off, (long long)w);
+      rc = 1;
+      goto fail;
+    }
+  }
+  ntfsb_sync(vol);
+  results[n].seconds = now_seconds() - t0;
+  after = dev.stats;
+  results[n].name = "循序覆寫";
+  results[n].logical_bytes = BENCH_SEQ_BYTES;
+  results[n].ops = BENCH_SEQ_BYTES / BENCH_SEQ_CHUNK;
+  results[n].op_unit = NULL;
+  results[n].io = stats_delta(&before, &after);
+  n++;
+
+  // ---- 4. 隨機讀取 ----
   {
     uint64_t state = 0x9E3779B97F4A7C15ull;
     uint64_t max_off = BENCH_SEQ_BYTES - BENCH_RAND_CHUNK;
@@ -247,7 +269,7 @@ int bench_run(const char *image_path, uint32_t block_size) {
     n++;
   }
 
-  // ---- 4. 小檔建立 ----
+  // ---- 5. 小檔建立 ----
   uint64_t small_dir = 0;
   rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "bench-small", NTFSB_TYPE_DIR, NULL, &small_dir);
   if (rc) {
@@ -282,7 +304,7 @@ int bench_run(const char *image_path, uint32_t block_size) {
   results[n].io = stats_delta(&before, &after);
   n++;
 
-  // ---- 5. 目錄走訪（readdir + 每項 getattr）----
+  // ---- 6. 目錄走訪（readdir + 每項 getattr）----
   {
     // readdir 回呼把 mft 編號收集起來，之後逐一 getattr
     bench_walk_ctx wc = { .mfts = malloc(sizeof(uint64_t) * (BENCH_SMALL_COUNT + 8)),
