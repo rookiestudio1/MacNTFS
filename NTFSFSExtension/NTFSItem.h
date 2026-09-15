@@ -2,7 +2,8 @@
 //  NTFSItem.h
 //  NTFSFSExtension
 //
-//  FSItem 子類：只記錄 MFT 編號與快取的型別，不長期持有 libntfs-3g 的 inode。
+//  FSItem 子類：記錄 MFT 編號與快取的型別。
+//  檔案在開啟期間會持有一個橋接層 handle（ntfsb_file），關閉時釋放。
 //
 
 #import <Foundation/Foundation.h>
@@ -20,6 +21,8 @@ static const uint64_t NTFSItemIDOffset = 64;
 @property (nonatomic) ntfsb_type type;
 /// 開啟計數（FSVolumeOpenCloseOperations）
 @property (nonatomic) NSUInteger openCount;
+/// 開啟期間持有的橋接層 handle（只有一般檔案會有；由 NTFSVolume 管理生命週期）
+@property (nonatomic, nullable) ntfsb_file *file;
 /// 目錄內容的修改世代，作為 enumerateDirectory 的 verifier
 @property (nonatomic) uint64_t generation;
 

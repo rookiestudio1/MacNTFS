@@ -55,6 +55,8 @@ static inline struct timespec NTFSTimespec(struct timespec ts) {
 @property (nonatomic) uint32_t gid;
 @property (nonatomic) uint32_t baseMode;
 @property (nonatomic) BOOL wantReadOnly;
+/// 定時把 handle 上延後的中繼資料寫回（見 startFlushTimer）
+@property (nonatomic, nullable) dispatch_source_t flushTimer;
 @end
 
 @implementation NTFSVolume {
@@ -97,10 +99,68 @@ static inline struct timespec NTFSTimespec(struct timespec ts) {
   return ro;
 }
 
+// MARK: - 延後中繼資料的定時寫回
+
+/// 寫入時只更新記憶體中的中繼資料，MFT record 延後寫回，藉此避免每次 write
+/// 都付一次 MFT 的 read-modify-write。代價是非正常卸載時中繼資料最多落後
+/// 一個週期，因此除了 closeItem 與 synchronize 之外，這裡再加一道定時寫回。
+static const NSTimeInterval NTFSMetadataFlushInterval = 5.0;
+
+- (void)startFlushTimer {
+  if (self.flushTimer) {
+    return;
+  }
+  dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+  dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+  // 給 1 秒 leeway 讓系統合併喚醒，閒置時幾乎不耗電
+  dispatch_source_set_timer(timer,
+                            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NTFSMetadataFlushInterval * NSEC_PER_SEC)),
+                            (uint64_t)(NTFSMetadataFlushInterval * NSEC_PER_SEC),
+                            NSEC_PER_SEC);
+  __weak typeof(self) weakSelf = self;
+  dispatch_source_set_event_handler(timer, ^{
+    [weakSelf flushDirtyMetadata];
+  });
+  self.flushTimer = timer;
+  dispatch_resume(timer);
+}
+
+- (void)stopFlushTimer {
+  if (self.flushTimer) {
+    dispatch_source_cancel(self.flushTimer);
+    self.flushTimer = nil;
+  }
+}
+
+- (void)flushDirtyMetadata {
+  [self.lock lock];
+  if (_vol && !ntfsb_is_readonly(_vol) && ntfsb_has_dirty_files(_vol)) {
+    int rc = ntfsb_flush_all(_vol);
+    if (rc) {
+      os_log_error(NTFSVolumeLog(), "定時寫回中繼資料失敗: %d", rc);
+    }
+  }
+  [self.lock unlock];
+}
+
+/// 關閉所有還開著的 handle（卸載前呼叫；會一併寫回延後的中繼資料）
+- (void)closeAllFileHandlesLocked {
+  for (NTFSItem *item in self.items.allValues) {
+    if (item.file) {
+      ntfsb_file_close(item.file);
+      item.file = NULL;
+      item.openCount = 0;
+    }
+  }
+}
+
 - (void)unmountIfNeeded {
+  [self stopFlushTimer];
   [self.lock lock];
   if (_vol) {
     os_log_info(NTFSVolumeLog(), "卸載 %{public}@", self.device.resource.BSDName);
+    // 先關掉 handle，避免 NTFSItem 留下指向已釋放記憶體的指標
+    [self closeAllFileHandlesLocked];
     int rc = ntfsb_umount(_vol);
     if (rc) {
       os_log_error(NTFSVolumeLog(), "ntfsb_umount 失敗: %d", rc);
@@ -350,7 +410,11 @@ static inline struct timespec NTFSTimespec(struct timespec ts) {
   }
   self.rootItem = [self itemForMFTNo:NTFSB_ROOT_MFT_NO type:NTFSB_TYPE_DIR];
   NTFSItem *root = self.rootItem;
+  BOOL writable = !ntfsb_is_readonly(_vol);
   [self.lock unlock];
+  if (writable) {
+    [self startFlushTimer];
+  }
   reply(root, nil);
 }
 
@@ -526,6 +590,13 @@ done:
   NTFSItem *ni = [self ntfsItem:item];
   if (ni) {
     [self.lock lock];
+    // 正常情況 FSKit 會先 closeItem，這裡只是防止 handle 隨 item 一起消失
+    if (ni.file) {
+      os_log_info(NTFSVolumeLog(), "reclaim 時 handle 仍開著 mft=%llu，強制關閉", ni.mftNo);
+      ntfsb_file_close(ni.file);
+      ni.file = NULL;
+      ni.openCount = 0;
+    }
     if (self.items[@(ni.mftNo)] == ni && ni != self.rootItem) {
       [self.items removeObjectForKey:@(ni.mftNo)];
     }
@@ -845,6 +916,17 @@ static int NTFSEnumCallback(void *context, const char *name, size_t len, uint64_
   }
   [self.lock lock];
   ni.openCount++;
+  // 第一次開啟一般檔案時建立橋接層 handle：開檔期間共用同一份 ntfs_inode 與
+  // ntfs_attr，省掉每次讀寫的重開與 runlist 重建，中繼資料也能延後寫回。
+  // 建立失敗不視為錯誤，讀寫會自動退回每次重開的路徑。
+  if (_vol && !ni.file && ni.type == NTFSB_TYPE_FILE) {
+    int err = 0;
+    ni.file = ntfsb_file_open(_vol, ni.mftNo, &err);
+    if (!ni.file) {
+      os_log_info(NTFSVolumeLog(), "建立 handle 失敗 mft=%llu errno=%d，改用一般路徑",
+                  ni.mftNo, err);
+    }
+  }
   [self.lock unlock];
   reply(nil);
 }
@@ -859,8 +941,17 @@ static int NTFSEnumCallback(void *context, const char *name, size_t len, uint64_
   if (ni.openCount > 0) {
     ni.openCount--;
   }
+  int rc = 0;
+  if (ni.openCount == 0 && ni.file) {
+    // 關檔時把延後的中繼資料寫回
+    rc = ntfsb_file_close(ni.file);
+    ni.file = NULL;
+  }
   [self.lock unlock];
-  reply(nil);
+  if (rc) {
+    os_log_error(NTFSVolumeLog(), "關閉 handle 失敗 mft=%llu rc=%d", ni.mftNo, rc);
+  }
+  reply(rc ? NTFSError(rc) : nil);
 }
 
 // MARK: - FSVolumeReadWriteOperations
@@ -877,7 +968,14 @@ static int NTFSEnumCallback(void *context, const char *name, size_t len, uint64_
   }
   size_t want = MIN(length, buffer.length);
   [self.lock lock];
-  int64_t got = _vol ? ntfsb_read(_vol, ni.mftNo, offset, buffer.mutableBytes, want) : -ENXIO;
+  int64_t got;
+  if (!_vol) {
+    got = -ENXIO;
+  } else if (ni.file) {
+    got = ntfsb_file_read(ni.file, offset, buffer.mutableBytes, want);
+  } else {
+    got = ntfsb_read(_vol, ni.mftNo, offset, buffer.mutableBytes, want);
+  }
   [self.lock unlock];
   if (got < 0) {
     reply(0, NTFSError((int)got));
@@ -896,7 +994,14 @@ static int NTFSEnumCallback(void *context, const char *name, size_t len, uint64_
     return;
   }
   [self.lock lock];
-  int64_t put = _vol ? ntfsb_write(_vol, ni.mftNo, offset, contents.bytes, contents.length) : -ENXIO;
+  int64_t put;
+  if (!_vol) {
+    put = -ENXIO;
+  } else if (ni.file) {
+    put = ntfsb_file_write(ni.file, offset, contents.bytes, contents.length);
+  } else {
+    put = ntfsb_write(_vol, ni.mftNo, offset, contents.bytes, contents.length);
+  }
   [self.lock unlock];
   if (put < 0) {
     reply(0, NTFSError((int)put));
