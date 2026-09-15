@@ -25,6 +25,8 @@
 #define BENCH_RAND_CHUNK     4096                    ///< 隨機讀取每次大小
 #define BENCH_SMALL_COUNT    2000                    ///< 小檔數量
 #define BENCH_SMALL_SIZE     1024                    ///< 小檔大小
+#define BENCH_RELOOKUP_FILES 500                     ///< 重複查找的檔案數
+#define BENCH_RELOOKUP_ROUNDS 4                      ///< 重複查找的輪數
 
 /// 單一項目的量測結果
 typedef struct bench_result {
@@ -230,9 +232,10 @@ int bench_run(const char *image_path, uint32_t block_size) {
            image_path, sf.cluster_size,
            (double)sf.free_clusters * sf.cluster_size / (1024.0 * 1024.0));
   }
-  printf("循序 %llu MB（每次 %llu KB）／隨機 %d × %d B／小檔 %d × %d B\n",
+  printf("循序 %llu MB（每次 %llu KB）／隨機 %d × %d B／小檔 %d × %d B／重複查找 %d × %d 輪\n",
          BENCH_SEQ_BYTES / (1024 * 1024), BENCH_SEQ_CHUNK / 1024,
-         BENCH_RAND_COUNT, BENCH_RAND_CHUNK, BENCH_SMALL_COUNT, BENCH_SMALL_SIZE);
+         BENCH_RAND_COUNT, BENCH_RAND_CHUNK, BENCH_SMALL_COUNT, BENCH_SMALL_SIZE,
+         BENCH_RELOOKUP_FILES, BENCH_RELOOKUP_ROUNDS);
 
   uint8_t *buf = malloc(BENCH_SEQ_CHUNK);
   if (!buf) {
@@ -243,7 +246,7 @@ int bench_run(const char *image_path, uint32_t block_size) {
   }
   memset(buf, 0xA5, BENCH_SEQ_CHUNK);
 
-  bench_result results[6];
+  bench_result results[7];
   int n = 0;
   int rc = 0;
   file_device_stats before, after;
@@ -481,7 +484,35 @@ int bench_run(const char *image_path, uint32_t block_size) {
     results[n].io = stats_delta(&before, &after);
     n++;
 
-    // ---- 7. 混合負載下的中繼資料延遲 ----
+    // ---- 7. 重複查找（Finder 式：反覆對同一批檔案做名稱查找 + getattr）----
+    // 這是 libntfs-3g 的 lookup / nidata 快取真正發揮作用的地方：
+    // 檔案數若超過快取容量，每一輪都會全部 miss。
+    {
+      int files = wc.count < BENCH_RELOOKUP_FILES ? wc.count : BENCH_RELOOKUP_FILES;
+      before = dev.stats;
+      t0 = now_seconds();
+      for (int round = 0; round < BENCH_RELOOKUP_ROUNDS; round++) {
+        for (int i = 0; i < files; i++) {
+          char name[64];
+          snprintf(name, sizeof(name), "f%05d.bin", i);
+          uint64_t m = 0;
+          if (ntfsb_lookup(vol, small_dir, name, &m, NULL) == 0) {
+            ntfsb_attr a;
+            ntfsb_getattr(vol, m, &a);
+          }
+        }
+      }
+      results[n].seconds = now_seconds() - t0;
+      after = dev.stats;
+      results[n].name = "重複查找";
+      results[n].logical_bytes = 0;
+      results[n].ops = (uint64_t)files * BENCH_RELOOKUP_ROUNDS;
+      results[n].op_unit = "次/秒";
+      results[n].io = stats_delta(&before, &after);
+      n++;
+    }
+
+    // ---- 8. 混合負載下的中繼資料延遲 ----
     {
       int sample_count = wc.count < 2000 ? wc.count : 2000;
       ntfsb_fairlock lock;

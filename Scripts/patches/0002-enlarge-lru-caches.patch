@@ -1,0 +1,20 @@
+--- a/include/ntfs-3g/param.h
++++ b/include/ntfs-3g/param.h
+@@ -23,8 +23,15 @@
+ #define _NTFS_PARAM_H
+ 
+ #define CACHE_INODE_SIZE 32	/* inode cache, zero or >= 3 and not too big */
+-#define CACHE_NIDATA_SIZE 64	/* idata cache, zero or >= 3 and not too big */
+-#define CACHE_LOOKUP_SIZE 64	/* lookup cache, zero or >= 3 and not too big */
++/*
++ * MacNTFS: the defaults are sized for embedded use.  A desktop Finder keeps
++ * re-stat'ing the same few hundred visible files, so a larger idata cache
++ * (closed inodes with their MFT records) and lookup cache (name -> inode
++ * per directory) turn those into hits.  Memory cost is modest: about 400 KB
++ * for 256 idata entries and 50 KB for 512 lookup entries.
++ */
++#define CACHE_NIDATA_SIZE 256	/* idata cache, zero or >= 3 and not too big */
++#define CACHE_LOOKUP_SIZE 512	/* lookup cache, zero or >= 3 and not too big */
+ #define CACHE_SECURID_SIZE 16    /* securid cache, zero or >= 3 and not too big */
+ #define CACHE_LEGACY_SIZE 8    /* legacy cache size, zero or >= 3 and not too big */
+ 
