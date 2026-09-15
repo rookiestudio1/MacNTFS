@@ -133,6 +133,13 @@ typedef enum ntfsb_xattr_policy {
 /// 程序啟動時呼叫一次：設定 locale 與 libntfs-3g 日誌等級。
 void ntfsb_global_init(void);
 
+/// libntfs-3g 日誌接收器：is_error 表示 ERROR／CRITICAL／PERROR 等級，msg 為已格式化的單行訊息。
+typedef void (*ntfsb_log_sink)(bool is_error, const char *msg);
+
+/// 設定 libntfs-3g 的日誌接收器（NULL 表示改回輸出到 stderr）。
+/// 延伸功能程序的 stderr 沒有人看，探測／掛載失敗的原因必須轉到 os_log 才查得到。
+void ntfsb_set_log_sink(ntfsb_log_sink sink);
+
 /// 探測裝置是否為 NTFS。成功回傳 0 並填入 info；非 NTFS 回傳 -EINVAL。
 int ntfsb_probe(const ntfsb_device_callbacks *dev, ntfsb_probe_info *info);
 

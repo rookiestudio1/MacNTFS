@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <locale.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -561,6 +562,40 @@ void ntfsb_global_init(void) {
   ntfs_log_set_handler(ntfs_log_handler_stderr);
   ntfs_log_set_levels(NTFS_LOG_LEVEL_ERROR | NTFS_LOG_LEVEL_WARNING | NTFS_LOG_LEVEL_CRITICAL |
                       NTFS_LOG_LEVEL_PERROR);
+}
+
+static ntfsb_log_sink g_log_sink = NULL;
+
+/// libntfs-3g 的 handler：把訊息格式化成單行後交給接收器
+static int ntfsb_log_handler(const char *function, const char *file, int line, u32 level,
+                             void *data, const char *format, va_list args) {
+  (void)file;
+  (void)line;
+  (void)data;
+  char body[512];
+  int n = vsnprintf(body, sizeof(body), format, args);
+  if (n < 0) {
+    return 0;
+  }
+  // libntfs 的訊息通常以換行結尾，去掉以免 os_log 多一行
+  size_t len = strnlen(body, sizeof(body));
+  while (len > 0 && body[len - 1] == '\n') {
+    body[--len] = '\0';
+  }
+  char msg[640];
+  if (level & NTFS_LOG_LEVEL_PERROR) {
+    snprintf(msg, sizeof(msg), "%s: %s: %s", function ? function : "?", body, strerror(errno));
+  } else {
+    snprintf(msg, sizeof(msg), "%s: %s", function ? function : "?", body);
+  }
+  bool is_error = (level & (NTFS_LOG_LEVEL_ERROR | NTFS_LOG_LEVEL_CRITICAL | NTFS_LOG_LEVEL_PERROR)) != 0;
+  g_log_sink(is_error, msg);
+  return n;
+}
+
+void ntfsb_set_log_sink(ntfsb_log_sink sink) {
+  g_log_sink = sink;
+  ntfs_log_set_handler(sink ? ntfsb_log_handler : ntfs_log_handler_stderr);
 }
 
 // MARK: - probe / mount / umount

@@ -45,12 +45,22 @@ static NSUUID *NTFSUUIDFromSerial(uint64_t serial) {
 @property (nonatomic, strong, nullable) FSBlockDeviceResource *lastResource;
 @end
 
+/// 把 libntfs-3g 的錯誤／警告轉到 os_log（延伸功能的 stderr 沒有人看）
+static void NTFSLibntfsLogSink(bool isError, const char *msg) {
+  if (isError) {
+    os_log_error(NTFSFSLog(), "libntfs: %{public}s", msg);
+  } else {
+    os_log(NTFSFSLog(), "libntfs: %{public}s", msg);
+  }
+}
+
 @implementation NTFSFileSystem
 
 - (instancetype)init {
   self = [super init];
   if (self) {
     ntfsb_global_init();
+    ntfsb_set_log_sink(NTFSLibntfsLogSink);
     _volumesByBSDName = [NSMutableDictionary dictionary];
     _volumesLock = [[NSLock alloc] init];
     self.containerStatus = FSContainerStatus.ready;
