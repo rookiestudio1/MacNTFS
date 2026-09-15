@@ -1,0 +1,24 @@
+--- a/libntfs-3g/dir.c
++++ b/libntfs-3g/dir.c
+@@ -1313,7 +1313,20 @@
+ 		goto err_out;
+ 	}
+ 
+-	bmp_buf_pos = 0;
++	/*
++	 * The bitmap buffer starts at byte (bmp_pos >> 3), so the bit that
++	 * describes block bmp_pos sits at bit offset (bmp_pos & 7) within it,
++	 * not at 0.  Starting at 0 examines the bit of an earlier block; when
++	 * that block happens to be in use the loop stops immediately and the
++	 * code then reads block bmp_pos even when it is past the end of the
++	 * index allocation, which fails with EIO.
++	 *
++	 * This only shows up when resuming a directory listing at a block that
++	 * is not 8-aligned, i.e. when the caller pages through a large
++	 * directory with readdir cookies.  A single uninterrupted listing
++	 * starts at bmp_pos 0 and stays aligned, which is why it never trips.
++	 */
++	bmp_buf_pos = bmp_pos & 7;
+ 	/* If the index block is not in use find the next one that is. */
+ 	while (!(bmp[bmp_buf_pos >> 3] & (1 << (bmp_buf_pos & 7)))) {
+ find_next_index_buffer:

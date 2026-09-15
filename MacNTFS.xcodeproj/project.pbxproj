@@ -21,6 +21,7 @@
 		56B831513AAE45E42DC79153 /* ntfs_bridge.c in Sources */ = {isa = PBXBuildFile; fileRef = 9099D7160A9DE7656C711B06 /* ntfs_bridge.c */; };
 		5CF1B10F60A9622A7EA3D4AA /* NTFSFSExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2C02552D112D5C0DE2FD5E4 /* NTFSFSExtension.swift */; };
 		6D6FF288DF3B63C3F76775BC /* NTFSVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F7A3EF5D1408FFEF46A7B69 /* NTFSVolume.swift */; };
+		6FF43FE582E56BDC15CB9CDD /* readdir_test.c in Sources */ = {isa = PBXBuildFile; fileRef = 20B07103CA86CF18F13EAA17 /* readdir_test.c */; };
 		7F83580C6EBB598F44A32A38 /* fairlock_test.c in Sources */ = {isa = PBXBuildFile; fileRef = CCDAA35E163FF2DBEE6014D6 /* fairlock_test.c */; };
 		8BF04C3A6A62960772A2F235 /* FSKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 25C794AC55C7794CEA6AEB14 /* FSKit.framework */; };
 		A26DD19D7432C31CC3A970C2 /* ntfs_fairlock.c in Sources */ = {isa = PBXBuildFile; fileRef = 1865EF3F8EA98703F79A01AA /* ntfs_fairlock.c */; };
@@ -70,10 +71,12 @@
 		0F7A3EF5D1408FFEF46A7B69 /* NTFSVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSVolume.swift; sourceTree = "<group>"; };
 		176E065ADDE8F658BC92B4E2 /* bench.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bench.c; sourceTree = "<group>"; };
 		1865EF3F8EA98703F79A01AA /* ntfs_fairlock.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ntfs_fairlock.c; sourceTree = "<group>"; };
+		20B07103CA86CF18F13EAA17 /* readdir_test.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = readdir_test.c; sourceTree = "<group>"; };
 		24483615219273E2D3951668 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		25C794AC55C7794CEA6AEB14 /* FSKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = FSKit.framework; path = System/Library/Frameworks/FSKit.framework; sourceTree = SDKROOT; };
 		28B97125E9945E3AF77E3D99 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		28F642F7D15C64994CD1A3EB /* file_device.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = file_device.c; sourceTree = "<group>"; };
+		42C6FB752623335F67ECB21C /* readdir_test.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = readdir_test.h; sourceTree = "<group>"; };
 		49FEC58939857A4D65EBE668 /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT; };
 		5A64B93F48BC85939C5A10F2 /* NTFSFairLock.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NTFSFairLock.m; sourceTree = "<group>"; };
 		5CB1DD3FED21D004EC53C9CB /* NTFSFairLock.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NTFSFairLock.h; sourceTree = "<group>"; };
@@ -161,6 +164,8 @@
 				28F642F7D15C64994CD1A3EB /* file_device.c */,
 				B0EC0C1D487A6C6BBF5E2D73 /* file_device.h */,
 				B0447C849E3A8B968B1EF981 /* main.c */,
+				20B07103CA86CF18F13EAA17 /* readdir_test.c */,
+				42C6FB752623335F67ECB21C /* readdir_test.h */,
 			);
 			path = "ntfs-bridge-test";
 			sourceTree = "<group>";
@@ -431,6 +436,7 @@
 				D05F60B8715085284614F756 /* ntfs_blockcache.c in Sources */,
 				56B831513AAE45E42DC79153 /* ntfs_bridge.c in Sources */,
 				A26DD19D7432C31CC3A970C2 /* ntfs_fairlock.c in Sources */,
+				6FF43FE582E56BDC15CB9CDD /* readdir_test.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

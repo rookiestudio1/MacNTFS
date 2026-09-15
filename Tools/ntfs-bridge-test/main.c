@@ -21,6 +21,7 @@
 
 #include "bcache_test.h"
 #include "ntfs_blockcache.h"
+#include "readdir_test.h"
 #include "bench.h"
 #include "fairlock_test.h"
 #include "file_device.h"
@@ -329,6 +330,44 @@ int main(int argc, char **argv) {
   rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "other.txt", &found, NULL);
   CHECK(rc == -ENOENT, "刪除後檔案消失");
 
+  // ---- 查找快取的失效 ----
+  // libntfs-3g 的 lookup 快取「連找不到也會快取」。建立名稱的一方必須呼叫
+  // ntfs_inode_update_mbsname 更新該筆記錄，否則先前的負向結果會一直留著，
+  // 剛建立的檔案就查不到。ntfs_delete 已經自行失效，所以只有建立側要處理。
+  {
+    uint64_t f = 0;
+    // 先查一次不存在的名稱，讓負向結果進入快取
+    rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "cachetest.txt", &f, NULL);
+    CHECK(rc == -ENOENT, "建立前查找不存在的名稱 (rc=%d)", rc);
+    uint64_t cmft = 0;
+    rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "cachetest.txt", NTFSB_TYPE_FILE, NULL, &cmft);
+    CHECK(rc == 0 && cmft >= 16, "建立 cachetest.txt (rc=%d)", rc);
+    rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "cachetest.txt", &f, NULL);
+    CHECK(rc == 0 && f == cmft, "建立後立刻查找得到（負向快取已失效）(rc=%d)", rc);
+
+    // 硬連結的新名稱同理
+    rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "cachelink.txt", &f, NULL);
+    CHECK(rc == -ENOENT, "連結前查找不存在的名稱 (rc=%d)", rc);
+    rc = ntfsb_link(vol, cmft, NTFSB_ROOT_MFT_NO, "cachelink.txt");
+    CHECK(rc == 0, "建立硬連結 cachelink.txt (rc=%d)", rc);
+    rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "cachelink.txt", &f, NULL);
+    CHECK(rc == 0 && f == cmft, "連結後立刻查找得到 (rc=%d)", rc);
+
+    // 重新命名（內部是 link + unlink）同理
+    rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "cacherenamed.txt", &f, NULL);
+    CHECK(rc == -ENOENT, "改名前查找不存在的名稱 (rc=%d)", rc);
+    rc = ntfsb_rename(vol, NTFSB_ROOT_MFT_NO, "cachetest.txt", cmft,
+                      NTFSB_ROOT_MFT_NO, "cacherenamed.txt", 0);
+    CHECK(rc == 0, "重新命名為 cacherenamed.txt (rc=%d)", rc);
+    rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "cacherenamed.txt", &f, NULL);
+    CHECK(rc == 0 && f == cmft, "改名後立刻查找得到 (rc=%d)", rc);
+    rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "cachetest.txt", &f, NULL);
+    CHECK(rc == -ENOENT, "改名後舊名稱查不到 (rc=%d)", rc);
+  }
+
+  // ---- 大目錄的分段列舉 ----
+  failures += readdir_test_run(vol, NTFSB_ROOT_MFT_NO);
+
   // ---- 未對齊讀取不應放大 ----
   // ntfsb_dev_pread 的未對齊路徑會透過 bounce buffer 讀取；它只該讀涵蓋請求所需
   // 的對齊範圍，不是每次都讀滿整個 buffer。
@@ -462,6 +501,51 @@ int main(int argc, char **argv) {
     r = ntfsb_read(vol, hmft, 0, verify, 1);
     CHECK(r == 1 && verify[0] == 'Z', "關閉後內容正確 (r=%lld)", (long long)r);
   skip_handle:;
+  }
+
+  // ---- 對「開著 handle 的檔案」做 rename / unlink ----
+  // ntfs_delete 會接管並關閉傳入的 inode，若那是 handle 借出的 inode 就會變成
+  // use-after-free。rename 內部就是 link + unlink，所以這條路徑一定會踩到。
+  {
+    uint64_t omft = 0;
+    rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "openrename.txt", NTFSB_TYPE_FILE, NULL, &omft);
+    CHECK(rc == 0 && omft >= 16, "建立 openrename.txt (rc=%d)", rc);
+    if (rc == 0 && omft >= 16) {
+      int oerr = 0;
+      ntfsb_file *of = ntfsb_file_open(vol, omft, &oerr);
+      CHECK(of != NULL, "開啟 openrename.txt 的 handle (errno=%d)", oerr);
+      if (of) {
+        int64_t w = ntfsb_file_write(of, 0, "OPEN", 4);
+        CHECK(w == 4, "handle 寫入 (w=%lld)", (long long)w);
+
+        // handle 還開著時重新命名
+        rc = ntfsb_rename(vol, NTFSB_ROOT_MFT_NO, "openrename.txt", omft,
+                          NTFSB_ROOT_MFT_NO, "openrenamed.txt", 0);
+        CHECK(rc == 0, "handle 開著時重新命名 (rc=%d)", rc);
+
+        uint64_t rf = 0;
+        rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "openrenamed.txt", &rf, NULL);
+        CHECK(rc == 0 && rf == omft, "重新命名後可用新名稱查找 (rc=%d)", rc);
+        rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "openrename.txt", &rf, NULL);
+        CHECK(rc == -ENOENT, "舊名稱已消失 (rc=%d)", rc);
+
+        // handle 必須仍然可用
+        char rb[8] = {0};
+        int64_t r = ntfsb_file_read(of, 0, rb, 4);
+        CHECK(r == 4 && memcmp(rb, "OPEN", 4) == 0,
+              "重新命名後 handle 仍可讀 (r=%lld 內容=%.4s)", (long long)r, rb);
+        w = ntfsb_file_write(of, 4, "MORE", 4);
+        CHECK(w == 4, "重新命名後 handle 仍可寫 (w=%lld)", (long long)w);
+
+        rc = ntfsb_file_close(of);
+        CHECK(rc == 0, "關閉 handle (rc=%d)", rc);
+
+        char vb[16] = {0};
+        r = ntfsb_read(vol, omft, 0, vb, 8);
+        CHECK(r == 8 && memcmp(vb, "OPENMORE", 8) == 0,
+              "重新命名後內容正確 (r=%lld 內容=%.8s)", (long long)r, vb);
+      }
+    }
   }
 
   // 留下一個檔案供外部工具驗證

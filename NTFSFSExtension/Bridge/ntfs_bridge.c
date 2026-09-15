@@ -1521,6 +1521,10 @@ int ntfsb_create(ntfsb_volume *v,
     ni->flags |= FILE_ATTR_ARCHIVE;
     NInoSetDirty(ni);
     *out_mft_no = ni->mft_no;
+    // libntfs-3g 的 lookup 快取連「找不到」也會記住，所以定義了新名稱之後
+    // 一定要更新該筆記錄，否則先前的負向結果會讓剛建立的檔案查不到。
+    // （ntfs_delete 會自行失效，只有建立名稱這一側要呼叫端處理。）
+    ntfs_inode_update_mbsname(dir_ni, name, ni->mft_no);
     // 關閉 ni 需要同步父目錄索引，因此用 close_in_dir 避免重複開啟
     if (ntfs_inode_close_in_dir(ni, dir_ni)) {
       res = ntfsb_neg_errno();
@@ -1626,6 +1630,8 @@ int ntfsb_link(ntfsb_volume *v, uint64_t mft_no, uint64_t dir_mft_no, const char
   } else if (ntfs_link(ni, dir_ni, uname, (u8)uname_len)) {
     res = ntfsb_neg_errno();
   } else {
+    // 同 ntfsb_create：新名稱必須寫進 lookup 快取，蓋掉可能存在的負向記錄
+    ntfs_inode_update_mbsname(dir_ni, name, ni->mft_no);
     ni->flags |= FILE_ATTR_ARCHIVE;
     ntfs_inode_update_times(ni, NTFS_UPDATE_CTIME);
     ntfs_inode_update_times(dir_ni, NTFS_UPDATE_MCTIME);

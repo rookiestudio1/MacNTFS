@@ -27,6 +27,16 @@ fi
 rm -rf "$SRC_DIR"
 tar xzf "$TARBALL" -C "$BUILD_DIR"
 
+# 套用本地修正。patch 失敗就中止：寧可建置停下來，也不要悄悄產出未修正的函式庫。
+PATCH_DIR="$ROOT_DIR/Scripts/patches"
+if [[ -d "$PATCH_DIR" ]]; then
+  for p in "$PATCH_DIR"/*.patch; do
+    [[ -e "$p" ]] || continue
+    echo "==> 套用 $(basename "$p")"
+    patch -p1 -d "$SRC_DIR" --forward --silent < "$p"
+  done
+fi
+
 # 針對單一架構進行 configure + make
 build_arch() {
   local arch="$1"
