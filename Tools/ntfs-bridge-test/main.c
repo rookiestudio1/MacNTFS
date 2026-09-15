@@ -19,6 +19,8 @@
 #include <sys/stat.h>
 #include <sys/xattr.h>
 
+#include "bcache_test.h"
+#include "ntfs_blockcache.h"
 #include "bench.h"
 #include "file_device.h"
 #include "ntfs_bridge.h"
@@ -109,6 +111,9 @@ int main(int argc, char **argv) {
     uint32_t bs = argc > 3 ? (uint32_t)atoi(argv[3]) : 512;
     return bench_run(argv[2], bs);
   }
+
+  // 區塊快取不需要映像檔，先跑
+  failures += bcache_test_run();
 
   uint32_t block_size = argc > 2 ? (uint32_t)atoi(argv[2]) : 512;
   file_device dev;
@@ -328,7 +333,11 @@ int main(int argc, char **argv) {
   {
     uint64_t umft = 0;
     rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "unaligned.bin", NTFSB_TYPE_FILE, NULL, &umft);
-    CHECK(rc == 0, "建立 unaligned.bin (rc=%d)", rc);
+    CHECK(rc == 0 && umft >= 16, "建立 unaligned.bin (rc=%d mft=%llu)",
+          rc, (unsigned long long)umft);
+    if (rc != 0 || umft < 16) {
+      goto skip_unaligned;  // mft_no 0 是 $MFT 本身，絕不能拿來寫
+    }
     char big[8192];
     memset(big, 'U', sizeof(big));
     // 要夠大才會是 non-resident，讀取才會真的碰到裝置
@@ -346,17 +355,18 @@ int main(int argc, char **argv) {
     CHECK(got_bytes <= 8192,
           "未對齊小讀取不放大：裝置讀取 %llu 位元組（應 <= 8192）",
           (unsigned long long)got_bytes);
+  skip_unaligned:;
   }
 
   // ---- 大於 bounce buffer 的未對齊讀取（走多輪迴圈）----
   {
     uint64_t lmft = 0;
     rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "bigunaligned.bin", NTFSB_TYPE_FILE, NULL, &lmft);
-    CHECK(rc == 0, "建立 bigunaligned.bin (rc=%d)", rc);
+    CHECK(rc == 0 && lmft >= 16, "建立 bigunaligned.bin (rc=%d mft=%llu)",
+          rc, (unsigned long long)lmft);
     const size_t big_size = 1024 * 1024;
-    uint8_t *src = malloc(big_size);
-    uint8_t *dst = malloc(big_size);
-    CHECK(src != NULL && dst != NULL, "配置 1 MB 測試緩衝區");
+    uint8_t *src = (rc == 0 && lmft >= 16) ? malloc(big_size) : NULL;
+    uint8_t *dst = src ? malloc(big_size) : NULL;
     if (src && dst) {
       for (size_t i = 0; i < big_size; i++) {
         src[i] = (uint8_t)(i * 31 + 7);
@@ -373,10 +383,12 @@ int main(int argc, char **argv) {
       CHECK(r == (int64_t)want, "未對齊讀取 300 KB (r=%lld)", (long long)r);
       CHECK(r == (int64_t)want && memcmp(dst, src + 1, want) == 0,
             "未對齊大讀取內容正確");
-      // 最多多讀頭尾各一個磁區
-      CHECK(got_bytes <= want + 2 * 512,
+      // 超過 bypass 門檻的部分直讀，低於門檻的尾段會走區塊快取並對齊到完整的行，
+      // 所以容許多讀兩行；這仍足以抓出「整個 bounce buffer 都讀進來」那種放大。
+      const size_t limit = want + 2 * NTFSB_BCACHE_LINE;
+      CHECK(got_bytes <= limit,
             "未對齊大讀取不放大：裝置讀取 %llu 位元組（應 <= %zu）",
-            (unsigned long long)got_bytes, want + 2 * 512);
+            (unsigned long long)got_bytes, limit);
     }
     free(src);
     free(dst);
@@ -386,7 +398,11 @@ int main(int argc, char **argv) {
   {
     uint64_t hmft = 0;
     rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "handle.bin", NTFSB_TYPE_FILE, NULL, &hmft);
-    CHECK(rc == 0, "建立 handle.bin (rc=%d)", rc);
+    CHECK(rc == 0 && hmft >= 16, "建立 handle.bin (rc=%d mft=%llu)",
+          rc, (unsigned long long)hmft);
+    if (rc != 0 || hmft < 16) {
+      goto skip_handle;
+    }
 
     int herr = 0;
     ntfsb_file *hf = ntfsb_file_open(vol, hmft, &herr);
@@ -443,6 +459,7 @@ int main(int argc, char **argv) {
           (unsigned long long)ha.size);
     r = ntfsb_read(vol, hmft, 0, verify, 1);
     CHECK(r == 1 && verify[0] == 'Z', "關閉後內容正確 (r=%lld)", (long long)r);
+  skip_handle:;
   }
 
   // 留下一個檔案供外部工具驗證

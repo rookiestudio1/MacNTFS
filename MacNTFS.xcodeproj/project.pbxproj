@@ -9,7 +9,9 @@
 /* Begin PBXBuildFile section */
 		02BED5F5A93A5760A00B5A59 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 49FEC58939857A4D65EBE668 /* CoreFoundation.framework */; };
 		0ED0EC5966DD56BCA6283525 /* DiskMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AB90A9826520387FD25E403 /* DiskMonitor.swift */; };
+		1271150448574DF3C73304BC /* bcache_test.c in Sources */ = {isa = PBXBuildFile; fileRef = FE6AFC484EFFA62F957CA842 /* bcache_test.c */; };
 		1D26780F6B3E1D20022D1BEF /* bench.c in Sources */ = {isa = PBXBuildFile; fileRef = 176E065ADDE8F658BC92B4E2 /* bench.c */; };
+		23BD57C5C09843043640572F /* ntfs_blockcache.c in Sources */ = {isa = PBXBuildFile; fileRef = C6EC8A5B3A21AF45458DB709 /* ntfs_blockcache.c */; };
 		2EF47DD03C37441FA71F488D /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24483615219273E2D3951668 /* AppState.swift */; };
 		45505E8432E88C1AF4C26D49 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28B97125E9945E3AF77E3D99 /* MenuBarView.swift */; };
 		49A9D6DAAD3BD0E2B741810F /* MainWindowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F02648F286948D227D5C5B47 /* MainWindowView.swift */; };
@@ -23,6 +25,7 @@
 		CBDFFEF7AD85AEE7B8EC6401 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CC79F174486BC983CC048AD0 /* Assets.xcassets */; };
 		CEE489A4384FE6473D87164A /* NTFSFileSystem.m in Sources */ = {isa = PBXBuildFile; fileRef = BB58BBEAF88893B7E60B1DDE /* NTFSFileSystem.m */; };
 		CFB909F58683E98A4F51DA57 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 49FEC58939857A4D65EBE668 /* CoreFoundation.framework */; };
+		D05F60B8715085284614F756 /* ntfs_blockcache.c in Sources */ = {isa = PBXBuildFile; fileRef = C6EC8A5B3A21AF45458DB709 /* ntfs_blockcache.c */; };
 		D88B90C90966B00BF2EF9761 /* ntfs_bridge.c in Sources */ = {isa = PBXBuildFile; fileRef = 9099D7160A9DE7656C711B06 /* ntfs_bridge.c */; };
 		DCC5F86BB0083876F366618E /* VolumeListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6CD8A1150D111ADD9BEAEAF /* VolumeListView.swift */; };
 		DE7DFC5EF2479954F2846482 /* MountController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEB37D268F718D6D4E2819E2 /* MountController.swift */; };
@@ -77,11 +80,13 @@
 		B0447C849E3A8B968B1EF981 /* main.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = main.c; sourceTree = "<group>"; };
 		B0EC0C1D487A6C6BBF5E2D73 /* file_device.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = file_device.h; sourceTree = "<group>"; };
 		B4241E714800F6070FCF05A5 /* NTFSItem.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NTFSItem.m; sourceTree = "<group>"; };
+		B7AE9BC95D0E06DBAC84B5C6 /* bcache_test.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bcache_test.h; sourceTree = "<group>"; };
 		B7FFB4C4D4B837AF19B7B449 /* NTFSItem.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NTFSItem.h; sourceTree = "<group>"; };
 		BB58BBEAF88893B7E60B1DDE /* NTFSFileSystem.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NTFSFileSystem.m; sourceTree = "<group>"; };
 		BD8F449B723CDC5B2E8E1C21 /* ntfs_bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ntfs_bridge.h; sourceTree = "<group>"; };
 		BEB37D268F718D6D4E2819E2 /* MountController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MountController.swift; sourceTree = "<group>"; };
 		BFA3C61DE05BFB766618BC4A /* MacNTFSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacNTFSApp.swift; sourceTree = "<group>"; };
+		C6EC8A5B3A21AF45458DB709 /* ntfs_blockcache.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ntfs_blockcache.c; sourceTree = "<group>"; };
 		C8EDACFB0086E09C2161968B /* NTFSBlockDevice.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NTFSBlockDevice.m; sourceTree = "<group>"; };
 		CA3517A79C23651EF0EE6EFB /* NTFSBlockDevice.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NTFSBlockDevice.h; sourceTree = "<group>"; };
 		CC79F174486BC983CC048AD0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -90,6 +95,8 @@
 		D6CD8A1150D111ADD9BEAEAF /* VolumeListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeListView.swift; sourceTree = "<group>"; };
 		E28EDC38EE0586A80D79B425 /* bench.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bench.h; sourceTree = "<group>"; };
 		F02648F286948D227D5C5B47 /* MainWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowView.swift; sourceTree = "<group>"; };
+		F33252A1DCAC767F749D6AD6 /* ntfs_blockcache.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ntfs_blockcache.h; sourceTree = "<group>"; };
+		FE6AFC484EFFA62F957CA842 /* bcache_test.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bcache_test.c; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -135,6 +142,8 @@
 		966D1C2FE4F57FBD3AD5F162 /* ntfs-bridge-test */ = {
 			isa = PBXGroup;
 			children = (
+				FE6AFC484EFFA62F957CA842 /* bcache_test.c */,
+				B7AE9BC95D0E06DBAC84B5C6 /* bcache_test.h */,
 				176E065ADDE8F658BC92B4E2 /* bench.c */,
 				E28EDC38EE0586A80D79B425 /* bench.h */,
 				28F642F7D15C64994CD1A3EB /* file_device.c */,
@@ -210,6 +219,8 @@
 		E5136E261399488851D809D5 /* Bridge */ = {
 			isa = PBXGroup;
 			children = (
+				C6EC8A5B3A21AF45458DB709 /* ntfs_blockcache.c */,
+				F33252A1DCAC767F749D6AD6 /* ntfs_blockcache.h */,
 				9099D7160A9DE7656C711B06 /* ntfs_bridge.c */,
 				BD8F449B723CDC5B2E8E1C21 /* ntfs_bridge.h */,
 			);
@@ -396,9 +407,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1271150448574DF3C73304BC /* bcache_test.c in Sources */,
 				1D26780F6B3E1D20022D1BEF /* bench.c in Sources */,
 				ED70DE5378D6DE8CF27641B4 /* file_device.c in Sources */,
 				AB6CEE592AAEAF31A1884D6D /* main.c in Sources */,
+				D05F60B8715085284614F756 /* ntfs_blockcache.c in Sources */,
 				56B831513AAE45E42DC79153 /* ntfs_bridge.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -412,6 +425,7 @@
 				CEE489A4384FE6473D87164A /* NTFSFileSystem.m in Sources */,
 				51383EA1C60AECCD7988C80C /* NTFSItem.m in Sources */,
 				E5F564CE72661427F227BBEE /* NTFSVolume.m in Sources */,
+				23BD57C5C09843043640572F /* ntfs_blockcache.c in Sources */,
 				D88B90C90966B00BF2EF9761 /* ntfs_bridge.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -6,6 +6,7 @@
 //
 
 #include "ntfs_bridge.h"
+#include "ntfs_blockcache.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -104,7 +105,18 @@ typedef struct ntfsb_dev_priv {
   int64_t pos;            ///< 目前檔案位置（seek/read/write 用）
   uint8_t *bounce;        ///< 對齊用暫存緩衝區
   int64_t size;           ///< 裝置總位元組數
+  ntfsb_bcache *cache;    ///< 區塊快取（見 ntfs_blockcache.h）
 } ntfsb_dev_priv;
+
+/// 釋放裝置私有資料。ntfs_umount 會自行釋放 dev 本體，所以有幾處要單獨呼叫這個。
+static void ntfsb_dev_priv_destroy(ntfsb_dev_priv *p) {
+  if (!p) {
+    return;
+  }
+  ntfsb_bcache_free(p->cache);
+  free(p->bounce);
+  free(p);
+}
 
 // MARK: - 小工具
 
@@ -234,6 +246,7 @@ static int ntfsb_dev_open(struct ntfs_device *dev, int flags) {
     }
   }
   p->pos = 0;
+  ntfsb_bcache_set_readonly(p->cache, !want_write);
   if (!want_write) {
     NDevSetReadOnly(dev);
   } else {
@@ -249,6 +262,10 @@ static int ntfsb_dev_close(struct ntfs_device *dev) {
   if (!NDevOpen(dev)) {
     errno = EBADF;
     return -1;
+  }
+  // 區塊快取是 write-back，關閉前一定要把髒行寫回
+  if (!NDevReadOnly(dev)) {
+    ntfsb_bcache_flush(p->cache);
   }
   if (NDevDirty(dev) && p->cb.sync) {
     p->cb.sync(p->cb.context);
@@ -279,40 +296,11 @@ static s64 ntfsb_dev_seek(struct ntfs_device *dev, s64 offset, int whence) {
 
 /// 對齊的區塊讀取：offset 與 count 必須是 block_size 倍數
 static s64 ntfsb_dev_pread_aligned(ntfsb_dev_priv *p, void *buf, s64 count, s64 offset) {
-  s64 total = 0;
-  while (total < count) {
-    int64_t got = p->cb.pread(p->cb.context, (uint8_t *)buf + total, count - total, offset + total);
-    if (got < 0) {
-      if (!errno) {
-        errno = EIO;
-      }
-      return -1;
-    }
-    if (got == 0) {
-      break;
-    }
-    total += got;
-  }
-  return total;
+  return ntfsb_bcache_pread(p->cache, buf, count, offset);
 }
 
 static s64 ntfsb_dev_pwrite_aligned(ntfsb_dev_priv *p, const void *buf, s64 count, s64 offset) {
-  s64 total = 0;
-  while (total < count) {
-    int64_t put = p->cb.pwrite(p->cb.context, (const uint8_t *)buf + total, count - total, offset + total);
-    if (put < 0) {
-      if (!errno) {
-        errno = EIO;
-      }
-      return -1;
-    }
-    if (put == 0) {
-      errno = ENOSPC;
-      return -1;
-    }
-    total += put;
-  }
-  return total;
+  return ntfsb_bcache_pwrite(p->cache, buf, count, offset);
 }
 
 static s64 ntfsb_dev_pread(struct ntfs_device *dev, void *buf, s64 count, s64 offset) {
@@ -455,8 +443,14 @@ static s64 ntfsb_dev_write(struct ntfs_device *dev, const void *buf, s64 count) 
 static int ntfsb_dev_sync(struct ntfs_device *dev) {
   ntfsb_dev_priv *p = ntfsb_dev(dev);
   int res = 0;
-  if (!NDevReadOnly(dev) && p->cb.sync) {
-    res = p->cb.sync(p->cb.context);
+  if (!NDevReadOnly(dev)) {
+    // 區塊快取的髒行必須先落盤，才輪到裝置本身的 sync
+    if (ntfsb_bcache_flush(p->cache) != 0) {
+      return -1;
+    }
+    if (p->cb.sync) {
+      res = p->cb.sync(p->cb.context);
+    }
   }
   if (res == 0) {
     NDevClearDirty(dev);
@@ -516,9 +510,15 @@ static struct ntfs_device *ntfsb_device_create(const char *name, const ntfsb_dev
   }
   p->cb = *cb;
   p->size = (int64_t)cb->block_count * (int64_t)cb->block_size;
+  p->cache = ntfsb_bcache_create(cb, p->size);
+  if (!p->cache) {
+    free(p);
+    errno = ENOMEM;
+    return NULL;
+  }
   struct ntfs_device *dev = ntfs_device_alloc(name ? name : "fskit", 0, &ntfsb_device_ops, p);
   if (!dev) {
-    free(p);
+    ntfsb_dev_priv_destroy(p);
     errno = ENOMEM;
     return NULL;
   }
@@ -532,8 +532,7 @@ static void ntfsb_device_priv_free(struct ntfs_device *dev) {
   }
   ntfsb_dev_priv *p = ntfsb_dev(dev);
   if (p) {
-    free(p->bounce);
-    free(p);
+    ntfsb_dev_priv_destroy(p);
     dev->d_private = NULL;
   }
 }
@@ -636,10 +635,7 @@ int ntfsb_probe(const ntfsb_device_callbacks *cb, ntfsb_probe_info *info) {
   // ntfs_umount 會釋放 dev 本體，我們的私有資料要自己釋放
   ntfsb_dev_priv *priv = vol->dev ? ntfsb_dev(vol->dev) : NULL;
   ntfs_umount(vol, TRUE);
-  if (priv) {
-    free(priv->bounce);
-    free(priv);
-  }
+  ntfsb_dev_priv_destroy(priv);
   return 0;
 }
 
@@ -715,10 +711,7 @@ int ntfsb_umount(ntfsb_volume *v) {
       res = ntfsb_neg_errno();
     }
     // ntfs_umount 已釋放 dev 本體
-    if (priv) {
-      free(priv->bounce);
-      free(priv);
-    }
+    ntfsb_dev_priv_destroy(priv);
     v->vol = NULL;
   }
   free(v->label);
