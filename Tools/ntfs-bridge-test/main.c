@@ -548,6 +548,88 @@ int main(int argc, char **argv) {
     }
   }
 
+  // ---- 對「開著 handle 的檔案」做 unlink ----
+  // ntfs_delete 會接管並關閉傳入的 inode。若那是 handle 借出的 inode，
+  // handle 就會指向已被 ntfs_inode_close 交還的記憶體；一旦 nidata 快取把它
+  // 逐出釋放，後續透過 handle 的讀寫就是 use-after-free。
+  // 這裡刻意用大量 inode 把快取衝掉，讓問題必然顯現。
+  {
+    uint64_t umft = 0;
+    rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "unlinkopen.txt", NTFSB_TYPE_FILE, NULL, &umft);
+    CHECK(rc == 0 && umft >= 16, "建立 unlinkopen.txt (rc=%d)", rc);
+    if (rc == 0 && umft >= 16) {
+      // 先加一個硬連結，這樣移除其中一個名稱後檔案仍然存在
+      rc = ntfsb_link(vol, umft, NTFSB_ROOT_MFT_NO, "unlinkopen2.txt");
+      CHECK(rc == 0, "建立第二個名稱 (rc=%d)", rc);
+
+      int uerr = 0;
+      ntfsb_file *uf = ntfsb_file_open(vol, umft, &uerr);
+      CHECK(uf != NULL, "開啟 handle (errno=%d)", uerr);
+      if (uf) {
+        int64_t w = ntfsb_file_write(uf, 0, "KEEPME12", 8);
+        CHECK(w == 8, "handle 寫入 (w=%lld)", (long long)w);
+
+        // handle 還開著時移除其中一個名稱
+        rc = ntfsb_unlink(vol, NTFSB_ROOT_MFT_NO, "unlinkopen.txt", umft);
+        CHECK(rc == 0, "handle 開著時移除其中一個名稱 (rc=%d)", rc);
+
+        // 用大量 inode 衝掉 nidata 快取（CACHE_NIDATA_SIZE 為 64）
+        uint64_t churn_dir = 0;
+        if (ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "churn", NTFSB_TYPE_DIR, NULL, &churn_dir) == 0) {
+          for (int i = 0; i < 200; i++) {
+            char nm[32];
+            snprintf(nm, sizeof(nm), "c%03d", i);
+            uint64_t cm = 0;
+            if (ntfsb_create(vol, churn_dir, nm, NTFSB_TYPE_FILE, NULL, &cm) == 0) {
+              ntfsb_attr ca;
+              ntfsb_getattr(vol, cm, &ca);
+            }
+          }
+        }
+
+        // handle 必須仍然指向有效的 inode
+        char rb[16] = {0};
+        int64_t r = ntfsb_file_read(uf, 0, rb, 8);
+        CHECK(r == 8 && memcmp(rb, "KEEPME12", 8) == 0,
+              "快取衝刷後 handle 仍可讀 (r=%lld 內容=%.8s)", (long long)r, rb);
+        w = ntfsb_file_write(uf, 8, "STILLOK!", 8);
+        CHECK(w == 8, "快取衝刷後 handle 仍可寫 (w=%lld)", (long long)w);
+
+        rc = ntfsb_file_close(uf);
+        CHECK(rc == 0, "關閉 handle (rc=%d)", rc);
+
+        char vb[24] = {0};
+        r = ntfsb_read(vol, umft, 0, vb, 16);
+        CHECK(r == 16 && memcmp(vb, "KEEPME12STILLOK!", 16) == 0,
+              "內容正確 (r=%lld 內容=%.16s)", (long long)r, vb);
+        uint64_t f2 = 0;
+        rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "unlinkopen2.txt", &f2, NULL);
+        CHECK(rc == 0 && f2 == umft, "剩下的名稱仍指向同一個 inode (rc=%d)", rc);
+      }
+    }
+  }
+
+  // ---- 移除最後一個名稱時 handle 要能優雅失效 ----
+  {
+    uint64_t lmft = 0;
+    rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "lastname.txt", NTFSB_TYPE_FILE, NULL, &lmft);
+    if (rc == 0 && lmft >= 16) {
+      int lerr = 0;
+      ntfsb_file *lf = ntfsb_file_open(vol, lmft, &lerr);
+      if (lf) {
+        ntfsb_file_write(lf, 0, "GONE", 4);
+        rc = ntfsb_unlink(vol, NTFSB_ROOT_MFT_NO, "lastname.txt", lmft);
+        CHECK(rc == 0, "移除最後一個名稱 (rc=%d)", rc);
+        // 檔案已不存在：讀寫應回錯誤而不是當掉
+        char gb[8];
+        int64_t r = ntfsb_file_read(lf, 0, gb, 4);
+        CHECK(r < 0, "檔案已刪除後 handle 讀取回傳錯誤 (r=%lld)", (long long)r);
+        rc = ntfsb_file_close(lf);
+        CHECK(rc == 0, "關閉已失效的 handle (rc=%d)", rc);
+      }
+    }
+  }
+
   // 留下一個檔案供外部工具驗證
   uint64_t keep = 0;
   rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "keep.txt", NTFSB_TYPE_FILE, NULL, &keep);

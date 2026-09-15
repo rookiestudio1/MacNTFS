@@ -79,14 +79,21 @@ struct ntfsb_file {
   bool meta_dirty;   ///< 有尚未寫回的中繼資料（大小、時間戳）
 };
 
-/// 找出 mft_no 對應的 handle，沒有則回傳 NULL
-static ntfsb_file *ntfsb_find_file(ntfsb_volume *v, uint64_t mft_no) {
+/// 找出 mft_no 對應的 handle（含暫停中、目前沒有持有 inode 的）
+static ntfsb_file *ntfsb_find_file_any(ntfsb_volume *v, uint64_t mft_no) {
   for (ntfsb_file *f = v->open_files; f; f = f->next) {
     if (f->mft_no == mft_no) {
       return f;
     }
   }
   return NULL;
+}
+
+/// 找出 mft_no 對應且仍持有 inode 的 handle，沒有則回傳 NULL。
+/// 暫停中的 handle 不會被借出，相關路徑會自動退回「每次重開」的行為。
+static ntfsb_file *ntfsb_find_file(ntfsb_volume *v, uint64_t mft_no) {
+  ntfsb_file *f = ntfsb_find_file_any(v, mft_no);
+  return (f && f->ni) ? f : NULL;
 }
 
 /// 這個 inode 是否由某個 handle 持有
@@ -1143,9 +1150,58 @@ ntfsb_file *ntfsb_file_open(ntfsb_volume *v, uint64_t mft_no, int *out_err) {
   return f;
 }
 
+/// 讓 handle 暫時放開它持有的 inode。
+///
+/// 有些 libntfs-3g 函式會「接管」傳入的 inode 並在內部關閉它——目前就是
+/// ntfs_delete。若傳進去的是 handle 借出的 inode，handle 之後就指向已交還的
+/// 記憶體，一旦 nidata 快取把它逐出釋放就是 use-after-free。
+/// 呼叫端必須在這類操作前後成對呼叫 suspend / resume。
+/// 回傳 true 表示確實暫停了一個 handle。
+static bool ntfsb_file_suspend(ntfsb_volume *v, uint64_t mft_no) {
+  ntfsb_file *f = ntfsb_find_file(v, mft_no);
+  if (!f) {
+    return false;
+  }
+  ntfs_attr_close(f->na);
+  f->na = NULL;
+  // 這裡要真的關閉（會順便寫回 dirty 的中繼資料）；接下來由呼叫端重新開一份
+  ntfs_inode_close(f->ni);
+  f->ni = NULL;
+  f->meta_dirty = false;
+  return true;
+}
+
+/// 與 ntfsb_file_suspend 配對。檔案已經不存在時 handle 會維持暫停狀態，
+/// 後續讀寫回傳 -ESTALE，直到呼叫端關閉它。
+static void ntfsb_file_resume(ntfsb_volume *v, uint64_t mft_no) {
+  ntfsb_file *f = ntfsb_find_file_any(v, mft_no);
+  if (!f || f->ni) {
+    return;
+  }
+  ntfs_inode *ni = ntfs_inode_open(v->vol, (MFT_REF)mft_no);
+  if (!ni) {
+    return;
+  }
+  // 最後一個名稱被移除後 MFT 記錄會被標為未使用，這種情況不要再接上去
+  if (!(ni->mrec->flags & MFT_RECORD_IN_USE)) {
+    ntfs_inode_close(ni);
+    return;
+  }
+  ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+  if (!na) {
+    ntfs_inode_close(ni);
+    return;
+  }
+  f->ni = ni;
+  f->na = na;
+}
+
 int64_t ntfsb_file_read(ntfsb_file *f, int64_t offset, void *buf, size_t len) {
   if (!f || !buf || offset < 0) {
     return -EINVAL;
+  }
+  if (!f->na) {
+    return -ESTALE;  // 檔案已被刪除
   }
   if (len == 0) {
     return 0;
@@ -1177,6 +1233,9 @@ int64_t ntfsb_file_write(ntfsb_file *f, int64_t offset, const void *buf, size_t 
   if (NVolReadOnly(f->v->vol)) {
     return -EROFS;
   }
+  if (!f->na) {
+    return -ESTALE;  // 檔案已被刪除
+  }
   if (len == 0) {
     return 0;
   }
@@ -1201,7 +1260,7 @@ int ntfsb_file_flush(ntfsb_file *f) {
   if (!f) {
     return -EINVAL;
   }
-  if (!f->meta_dirty) {
+  if (!f->meta_dirty || !f->ni) {
     return 0;
   }
   if (ntfs_inode_sync(f->ni)) {
@@ -1228,9 +1287,12 @@ int ntfsb_file_close(ntfsb_file *f) {
     *pp = f->next;
   }
   int res = 0;
-  ntfs_attr_close(f->na);
+  // 暫停中的 handle 已經沒有 inode 與 attr 可關（檔案被刪掉了）
+  if (f->na) {
+    ntfs_attr_close(f->na);
+  }
   // ntfs_inode_close 內部會在 dirty 時自行 ntfs_inode_sync
-  if (ntfs_inode_close(f->ni)) {
+  if (f->ni && ntfs_inode_close(f->ni)) {
     res = ntfsb_neg_errno();
   }
   free(f);
@@ -1555,29 +1617,33 @@ int ntfsb_unlink(ntfsb_volume *v, uint64_t dir_mft_no, const char *name, uint64_
     return uname_len;
   }
   int res = 0;
-  ntfs_inode *ni = ntfsb_open_inode(v, mft_no);
+  ntfs_inode *ni = NULL;
+  ntfs_inode *dir_ni = NULL;
+  // ntfs_delete 會接管並關閉傳入的 inode，所以不能把 handle 借出的那一份交給它。
+  // 先讓 handle 放手，等這裡做完再接回來。
+  bool suspended = ntfsb_file_suspend(v, mft_no);
+
+  ni = ntfsb_open_inode(v, mft_no);
   if (!ni) {
-    free(uname);
-    return ntfsb_neg_errno();
+    res = ntfsb_neg_errno();
+    goto done;
   }
-  ntfs_inode *dir_ni = ntfsb_open_inode(v, dir_mft_no);
+  dir_ni = ntfsb_open_inode(v, dir_mft_no);
   if (!dir_ni) {
     res = ntfsb_neg_errno();
-    ntfsb_close_inode(v, ni);
-    free(uname);
-    return res;
+    goto done;
   }
   if (dir_ni->mft_no == FILE_Extend) {
     res = -EPERM;
-    goto exit_close;
+    goto done;
   }
   if ((ni->mrec->flags & MFT_RECORD_IS_DIRECTORY) && ntfs_check_empty_dir(ni)) {
     res = ntfsb_neg_errno();
-    goto exit_close;
+    goto done;
   }
   if (dir_ni->flags & FILE_ATTR_REPARSE_POINT) {
     res = -EOPNOTSUPP;
-    goto exit_close;
+    goto done;
   }
   // ntfs_delete 無論成功與否都會關閉 ni 與 dir_ni
   if (ntfs_delete(v->vol, NULL, ni, dir_ni, uname, (u8)uname_len)) {
@@ -1585,12 +1651,18 @@ int ntfsb_unlink(ntfsb_volume *v, uint64_t dir_mft_no, const char *name, uint64_
   }
   ni = NULL;
   dir_ni = NULL;
-exit_close:
+
+done:
   if (dir_ni && ntfsb_close_inode(v, dir_ni) && !res) {
     res = ntfsb_neg_errno();
   }
   if (ni && ntfsb_close_inode(v, ni) && !res) {
     res = ntfsb_neg_errno();
+  }
+  // 檔案還在（例如還有其他硬連結，或這是 rename 的前半段）就接回去；
+  // 已經消失則 handle 維持暫停，後續讀寫回傳 ESTALE。
+  if (suspended) {
+    ntfsb_file_resume(v, mft_no);
   }
   free(uname);
   return res;
