@@ -114,11 +114,171 @@ static void test_truncate_solid(ntfsb_volume *vol) {
   CHECK(r == (int64_t)sizeof(buf) && buf[0] == 0 && buf[4095] == 0, "truncate_solid：未初始化區讀到零");
 }
 
+/// 假 kernel：收集 extent
+typedef struct extent_list {
+  ntfsb_extent items[64];
+  int count;
+  int limit;   ///< 模擬 packer 容量：達到後回 1
+} extent_list;
+
+static int collect_extent(void *ctx, const ntfsb_extent *e) {
+  extent_list *l = ctx;
+  if (l->limit && l->count >= l->limit) {
+    return 1;
+  }
+  if (l->count < 64) {
+    l->items[l->count++] = *e;
+  }
+  return 0;
+}
+
+/// 假 kernel：依 extent 直接讀映像檔，組出 [offset, offset+len) 的內容
+static int kernel_read(file_device *dev, const extent_list *l, int64_t offset, int64_t len, uint8_t *out) {
+  memset(out, 0xEE, len);  // 沒被 extent 覆蓋的位置留下記號
+  for (int i = 0; i < l->count; i++) {
+    const ntfsb_extent *e = &l->items[i];
+    int64_t lo = e->logical > offset ? e->logical : offset;
+    int64_t hi = (e->logical + e->length < offset + len) ? e->logical + e->length : offset + len;
+    if (hi <= lo) {
+      continue;
+    }
+    if (e->zero_fill) {
+      memset(out + (lo - offset), 0, hi - lo);
+    } else if (pread(dev->fd, out + (lo - offset), hi - lo, e->physical + (lo - e->logical)) != hi - lo) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+/// 檢查 extent 依序、不重疊、完整覆蓋 [offset, offset+len)
+static bool extents_cover(const extent_list *l, int64_t offset, int64_t len) {
+  int64_t pos = offset;
+  for (int i = 0; i < l->count; i++) {
+    const ntfsb_extent *e = &l->items[i];
+    if (e->logical > pos) {
+      return false;
+    }
+    if (e->logical + e->length > pos) {
+      pos = e->logical + e->length;
+    }
+  }
+  return pos >= offset + len;
+}
+
+static void test_blockmap_read(ntfsb_volume *vol, file_device *dev) {
+  // 3 MB 圖樣檔，再拉長到 5 MB 讓後段是未初始化區
+  const size_t data_len = 3 << 20;
+  uint8_t *pattern = malloc(data_len);
+  for (size_t i = 0; i < data_len; i++) {
+    pattern[i] = (uint8_t)(i * 7 + (i >> 12));
+  }
+  uint64_t mft = 0;
+  int rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "koio_read.bin", NTFSB_TYPE_FILE, NULL, &mft);
+  CHECK(rc == 0, "blockmap 讀：建立檔案 (rc=%d)", rc);
+  int64_t w = ntfsb_write(vol, mft, 0, pattern, data_len);
+  CHECK(w == (int64_t)data_len, "blockmap 讀：寫入 3 MB");
+  rc = ntfsb_truncate(vol, mft, 5 << 20);
+  CHECK(rc == 0, "blockmap 讀：拉長到 5 MB");
+  CHECK(ntfsb_sync(vol) == 0, "blockmap 讀：sync");
+
+  // 未對齊的範圍：從 100 到 4 MB + 50
+  int64_t off = 100, len = (4 << 20) - 50;
+  extent_list l = {0};
+  rc = ntfsb_blockmap(vol, mft, off, len, false, collect_extent, &l);
+  CHECK(rc == 0 && l.count > 0, "blockmap 讀：rc=%d extents=%d", rc, l.count);
+  CHECK(extents_cover(&l, off, len), "blockmap 讀：extent 完整覆蓋且不重疊");
+  bool aligned = true;
+  for (int i = 0; i < l.count; i++) {
+    if (!l.items[i].zero_fill && (l.items[i].physical % CLUSTER || l.items[i].logical % CLUSTER)) {
+      aligned = false;
+    }
+  }
+  CHECK(aligned, "blockmap 讀：Data extent 都對齊叢集");
+  CHECK(l.count > 0 && l.items[l.count - 1].zero_fill, "blockmap 讀：超過 init_size 的部分是 ZeroFill");
+
+  uint8_t *got = malloc(len);
+  uint8_t *want = malloc(len);
+  CHECK(kernel_read(dev, &l, off, len, got) == 0, "blockmap 讀：假 kernel 讀取");
+  int64_t r = ntfsb_read(vol, mft, off, want, len);
+  CHECK(r == len, "blockmap 讀：橋接層讀取 (r=%lld)", (long long)r);
+  CHECK(memcmp(got, want, len) == 0, "blockmap 讀：kernel 與橋接層讀到相同內容");
+
+  // packer 容量有限：分兩次拿要能銜接
+  extent_list p1 = {0}, p2 = {0};
+  p1.limit = 1;
+  rc = ntfsb_blockmap(vol, mft, 0, 3 << 20, false, collect_extent, &p1);
+  CHECK(rc == 0 && p1.count == 1, "blockmap 讀：packer 滿後停止 (rc=%d n=%d)", rc, p1.count);
+  int64_t next = p1.count ? p1.items[0].logical + p1.items[0].length : 0;
+  if (next < (3 << 20)) {
+    rc = ntfsb_blockmap(vol, mft, next, (3 << 20) - next, false, collect_extent, &p2);
+    CHECK(rc == 0 && p2.count > 0 && p2.items[0].logical <= next, "blockmap 讀：續傳從 %lld 接上", (long long)next);
+  } else {
+    CHECK(true, "blockmap 讀：單一 extent 已涵蓋全部（不需續傳）");
+  }
+
+  // 刻意打碎的檔案：建立 A 與 D，讓實體位置在前面的那個長到跨過後面那個的起點，
+  // 配置器會被擋住而跳過去，於是它至少有兩段
+  {
+    uint64_t fa = make_file(vol, "koio_frag_a.bin", 1 << 20, 0xA0);
+    uint64_t fd = make_file(vol, "koio_frag_d.bin", 1 << 20, 0xD0);
+    CHECK(fa && fd, "blockmap 讀：建立 A 與 D");
+    extent_list ea = {0}, ed = {0};
+    ntfsb_blockmap(vol, fa, 0, 1 << 20, false, collect_extent, &ea);
+    ntfsb_blockmap(vol, fd, 0, 1 << 20, false, collect_extent, &ed);
+    CHECK(ea.count == 1 && ed.count == 1, "blockmap 讀：A 與 D 各自連續");
+    bool a_first = ea.items[0].physical < ed.items[0].physical;
+    uint64_t lower = a_first ? fa : fd;
+    int64_t gap = a_first ? ed.items[0].physical - ea.items[0].physical
+                          : ea.items[0].physical - ed.items[0].physical;
+    // 讓前面的檔案長到超過後面檔案的起點再多 1 MB
+    int64_t target = gap + (1 << 20);
+    uint8_t *chunk = malloc(1 << 20);
+    memset(chunk, 0xA1, 1 << 20);
+    bool grew = true;
+    for (int64_t off = 1 << 20; off < target && grew; off += 1 << 20) {
+      grew = ntfsb_write(vol, lower, off, chunk, 1 << 20) == (1 << 20);
+    }
+    free(chunk);
+    CHECK(grew, "blockmap 讀：前面的檔案長到 %lld MB", (long long)(target >> 20));
+    fa = lower;
+    ntfsb_attr fattr;
+    CHECK(ntfsb_getattr(vol, fa, &fattr) == 0, "blockmap 讀：碎檔屬性");
+    int64_t flen = (int64_t)fattr.size;
+    extent_list all = {0};
+    rc = ntfsb_blockmap(vol, fa, 0, flen, false, collect_extent, &all);
+    CHECK(rc == 0 && all.count >= 2, "blockmap 讀：碎檔有 %d 個 extent", all.count);
+    CHECK(extents_cover(&all, 0, flen), "blockmap 讀：碎檔 extent 完整覆蓋");
+    extent_list f1 = {0}, f2 = {0};
+    f1.limit = 1;
+    rc = ntfsb_blockmap(vol, fa, 0, flen, false, collect_extent, &f1);
+    int64_t cont = f1.count ? f1.items[0].logical + f1.items[0].length : 0;
+    CHECK(rc == 0 && f1.count == 1 && cont < flen, "blockmap 讀：碎檔 packer 滿後停在 %lld", (long long)cont);
+    rc = ntfsb_blockmap(vol, fa, cont, flen - cont, false, collect_extent, &f2);
+    CHECK(rc == 0 && f2.count >= 1 && f2.items[0].logical == cont, "blockmap 讀：碎檔續傳從 %lld 接上", (long long)cont);
+    uint8_t *fg = malloc(flen);
+    uint8_t *fw = malloc(flen);
+    CHECK(kernel_read(dev, &all, 0, flen, fg) == 0 && ntfsb_read(vol, fa, 0, fw, flen) == flen &&
+              memcmp(fg, fw, flen) == 0,
+          "blockmap 讀：碎檔 kernel 與橋接層內容一致");
+    free(fg);
+    free(fw);
+  }
+
+  // 目錄不能 blockmap
+  rc = ntfsb_blockmap(vol, NTFSB_ROOT_MFT_NO, 0, 4096, false, collect_extent, &l);
+  CHECK(rc == -EISDIR, "blockmap 讀：目錄回 EISDIR (rc=%d)", rc);
+
+  free(pattern);
+  free(got);
+  free(want);
+}
+
 int koio_test_run(ntfsb_volume *vol, file_device *dev) {
-  (void)dev;
   failures = 0;
   printf("---- KOIO ----\n");
   test_eligibility();
   test_truncate_solid(vol);
+  test_blockmap_read(vol, dev);
   return failures;
 }

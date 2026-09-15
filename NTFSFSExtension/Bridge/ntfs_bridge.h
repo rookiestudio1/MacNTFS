@@ -172,6 +172,31 @@ int ntfsb_sync(ntfsb_volume *vol);
 /// initialized_size < size 且 initialized_size 不在叢集邊界也不行（半滿叢集的尾巴是垃圾）。
 bool ntfsb_koio_eligible(const ntfsb_attr *attr, uint32_t cluster_size);
 
+/// 一段邏輯→實體對應。zero_fill 為 true 時 physical 無意義，該範圍讀成零。
+typedef struct ntfsb_extent {
+  int64_t logical;   ///< 檔案內位移（位元組）
+  int64_t physical;  ///< 裝置位移（位元組，與裝置回呼同座標系）
+  int64_t length;
+  bool zero_fill;
+} ntfsb_extent;
+
+/// extent 回呼。回傳非 0 表示 packer 已滿，停止打包（不算錯誤）。
+typedef int (*ntfsb_extent_cb)(void *context, const ntfsb_extent *extent);
+
+/// 把檔案 [offset, offset+length) 依 runlist 打包成 extent，逐一交給 cb。
+/// - 讀取：[0, initialized_size) 內是 Data，之後是 ZeroFill。
+/// - 寫入（for_write）：先確保 [offset, offset+length) 已配置叢集、[initialized_size, offset) 已補零，
+///   再打包 Data；唯讀卷回 -EROFS。
+/// 每個 Data extent 交出去前，區塊快取裡對應的範圍會先 flush 並失效。
+/// 目錄回 -EISDIR、非一般檔案回 -EINVAL。
+int ntfsb_blockmap(ntfsb_volume *vol,
+                   uint64_t mft_no,
+                   int64_t offset,
+                   int64_t length,
+                   bool for_write,
+                   ntfsb_extent_cb cb,
+                   void *context);
+
 // MARK: - 檔案與目錄
 
 /// 取得屬性

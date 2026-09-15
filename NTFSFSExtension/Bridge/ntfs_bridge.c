@@ -2153,3 +2153,128 @@ bool ntfsb_koio_eligible(const ntfsb_attr *a, uint32_t cluster_size) {
   }
   return true;
 }
+
+/// 取得裝置層的區塊快取（供 blockmap 做範圍 flush）
+static ntfsb_bcache *ntfsb_volume_bcache(ntfsb_volume *v) {
+  ntfsb_dev_priv *p = ntfsb_dev(v->vol->dev);
+  return p ? p->cache : NULL;
+}
+
+/// 把 [start, end) 依 runlist 打包成 Data／ZeroFill extent。
+/// 回傳 0、1（packer 已滿）或負 errno。
+static int ntfsb_pack_runs(ntfsb_volume *v, ntfs_attr *na, int64_t start, int64_t end,
+                           ntfsb_extent_cb cb, void *context) {
+  ntfs_volume *vol = v->vol;
+  ntfsb_bcache *cache = ntfsb_volume_bcache(v);
+  if (ntfs_attr_map_whole_runlist(na)) {
+    return ntfsb_neg_errno();
+  }
+  // 邏輯範圍對齊到叢集；kernel 自己會裁掉多出來的部分
+  int64_t cs = vol->cluster_size;
+  int64_t pos = start - (start % cs);
+  int64_t stop = ((end + cs - 1) / cs) * cs;
+  for (runlist_element *rl = na->rl; rl && rl->length > 0 && pos < stop; rl++) {
+    int64_t run_start = rl->vcn * cs;
+    int64_t run_end = run_start + rl->length * cs;
+    if (run_end <= pos) {
+      continue;
+    }
+    if (run_start > pos) {
+      // runlist 有缺口（不該發生），保守地以零呈現
+      ntfsb_extent gap = {pos, 0, run_start - pos, true};
+      if (gap.logical + gap.length > stop) {
+        gap.length = stop - gap.logical;
+      }
+      if (cb(context, &gap)) {
+        return 1;
+      }
+      pos += gap.length;
+      if (pos >= stop) {
+        break;
+      }
+    }
+    int64_t seg_end = run_end < stop ? run_end : stop;
+    ntfsb_extent e = {pos, 0, seg_end - pos, false};
+    if (rl->lcn == LCN_HOLE) {
+      e.zero_fill = true;
+    } else if (rl->lcn < 0) {
+      return -EIO;
+    } else {
+      e.physical = rl->lcn * cs + (pos - run_start);
+      // 交給 kernel 之前，快取不能再持有這段範圍的任何副本
+      if (cache && ntfsb_bcache_flush_range(cache, e.physical, e.length) != 0) {
+        return ntfsb_neg_errno();
+      }
+    }
+    if (cb(context, &e)) {
+      return 1;
+    }
+    pos = seg_end;
+  }
+  return 0;
+}
+
+int ntfsb_blockmap(ntfsb_volume *v, uint64_t mft_no, int64_t offset, int64_t length,
+                   bool for_write, ntfsb_extent_cb cb, void *context) {
+  if (!v || !v->vol || !cb || offset < 0 || length < 0) {
+    return -EINVAL;
+  }
+  if (length == 0) {
+    return 0;
+  }
+  if (for_write && NVolReadOnly(v->vol)) {
+    return -EROFS;
+  }
+  ntfs_inode *ni = ntfsb_open_inode(v, mft_no);
+  if (!ni) {
+    return ntfsb_neg_errno();
+  }
+  int res = 0;
+  if (ni->mrec->flags & MFT_RECORD_IS_DIRECTORY) {
+    res = -EISDIR;
+    goto exit;
+  }
+  if ((ni->flags & FILE_ATTR_REPARSE_POINT) || ni->mft_no < FILE_first_user) {
+    res = -EINVAL;
+    goto exit;
+  }
+  {
+    // 有 handle 時必須沿用 handle 的 ntfs_attr，否則兩份 runlist 會分歧
+    ntfsb_file *held = ntfsb_find_file(v, mft_no);
+    ntfs_attr *na = held ? held->na : ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+    if (!na) {
+      res = ntfsb_neg_errno();
+      goto exit;
+    }
+    if (!NAttrNonResident(na) || (na->data_flags & (ATTR_COMPRESSION_MASK | ATTR_IS_ENCRYPTED))) {
+      res = -EINVAL;
+    } else if (for_write) {
+      res = -EROFS;  // Task 5 補上
+    } else {
+      int64_t end = offset + length;
+      int64_t init = na->initialized_size;
+      int rc = 0;
+      if (offset < init) {
+        rc = ntfsb_pack_runs(v, na, offset, end < init ? end : init, cb, context);
+      }
+      if (rc == 0 && end > init) {
+        // 超過 initialized_size 的部分在磁碟上是垃圾，交給 kernel 當零讀
+        int64_t cs = v->vol->cluster_size;
+        int64_t zstart = ((init + cs - 1) / cs) * cs;
+        if (zstart < end) {
+          ntfsb_extent z = {zstart, 0, end - zstart, true};
+          rc = cb(context, &z) ? 1 : 0;
+        }
+      }
+      res = rc < 0 ? rc : 0;
+    }
+    if (!held) {
+      ntfs_attr_close(na);
+    }
+  }
+exit:
+  if (ntfsb_close_inode(v, ni) && !res) {
+    res = ntfsb_neg_errno();
+  }
+  return res;
+}
