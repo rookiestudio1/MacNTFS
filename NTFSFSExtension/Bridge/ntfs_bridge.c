@@ -1501,7 +1501,12 @@ int ntfsb_truncate(ntfsb_volume *v, uint64_t mft_no, int64_t size) {
       if (ntfs_attr_pwrite(na, size - 1, 1, &zero) <= 0) {
         res = ntfsb_neg_errno();
       }
-    } else if (ntfs_attr_truncate(na, size)) {
+    } else if ((size > na->data_size && !(na->data_flags & ATTR_IS_SPARSE))
+                   ? ntfs_attr_truncate_solid(na, size)
+                   : ntfs_attr_truncate(na, size)) {
+      // 拉長時真的配置叢集（與 Windows SetEndOfFile 一致）而不是留洞：
+      // 留洞會把檔案標成 sparse，之後就不能走 kernel offloaded I/O。
+      // 本來就是 sparse 的檔案維持原本留洞的行為。
       res = ntfsb_neg_errno();
     }
     if (!held) {
