@@ -64,8 +64,8 @@ build_arch() {
       --disable-dependency-tracking \
       $host_flag \
       CC="$(xcrun -f clang)" \
-      CFLAGS="-arch $arch -mmacosx-version-min=$MIN_MACOS -O2 -isysroot $(xcrun --sdk macosx --show-sdk-path)" \
-      LDFLAGS="-arch $arch -mmacosx-version-min=$MIN_MACOS" \
+      CFLAGS="-arch $arch -mmacosx-version-min=$MIN_MACOS -O2 -flto -isysroot $(xcrun --sdk macosx --show-sdk-path)" \
+      LDFLAGS="-arch $arch -mmacosx-version-min=$MIN_MACOS -flto" \
       >"$BUILD_DIR/configure-$arch.log" 2>&1
     make -j"$(sysctl -n hw.ncpu)" -C libntfs-3g >"$BUILD_DIR/make-$arch.log" 2>&1
     # ntfs-3g 的 make install hook 假設有 .so，靜態編譯時會失敗，因此直接複製產物
