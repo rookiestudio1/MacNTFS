@@ -197,6 +197,19 @@ int ntfsb_blockmap(ntfsb_volume *vol,
                    ntfsb_extent_cb cb,
                    void *context);
 
+/// kernel 完成一次 I/O 後更新中繼資料。
+/// - 寫入成功：data_size 與 initialized_size 推進到 offset+length、更新 mtime／ctime。
+/// - 寫入失敗（io_failed）：不推進 initialized_size，該範圍在兩條路徑上都讀成零。
+/// - 讀取：不做事。
+/// defer_meta 為 true 且檔案有 handle 時，MFT record 交給定時 flush；否則立即寫回。
+int ntfsb_complete_io(ntfsb_volume *vol,
+                      uint64_t mft_no,
+                      int64_t offset,
+                      int64_t length,
+                      bool for_write,
+                      bool io_failed,
+                      bool defer_meta);
+
 // MARK: - 檔案與目錄
 
 /// 取得屬性

@@ -274,11 +274,139 @@ static void test_blockmap_read(ntfsb_volume *vol, file_device *dev) {
   free(want);
 }
 
+/// 假 kernel：依 extent 直接把資料寫進映像檔
+static int kernel_write(file_device *dev, const extent_list *l, int64_t offset, int64_t len, const uint8_t *in) {
+  for (int i = 0; i < l->count; i++) {
+    const ntfsb_extent *e = &l->items[i];
+    if (e->zero_fill) {
+      return -1;  // 寫入路徑不該拿到 ZeroFill
+    }
+    int64_t lo = e->logical > offset ? e->logical : offset;
+    int64_t hi = (e->logical + e->length < offset + len) ? e->logical + e->length : offset + len;
+    if (hi <= lo) {
+      continue;
+    }
+    if (pwrite(dev->fd, in + (lo - offset), hi - lo, e->physical + (lo - e->logical)) != hi - lo) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+/// 用 use_handle 決定是否經由持久 handle 跑寫入流程
+static void test_blockmap_write(ntfsb_volume *vol, file_device *dev, bool use_handle) {
+  const char *tag = use_handle ? "有 handle" : "無 handle";
+  char name[64];
+  snprintf(name, sizeof(name), "koio_write_%d.bin", use_handle);
+  uint64_t mft = make_file(vol, name, 1 << 20, 0x11);
+  CHECK(mft != 0, "blockmap 寫（%s）：建立 1 MB 檔案", tag);
+  if (!mft) {
+    return;
+  }
+  ntfsb_file *f = NULL;
+  if (use_handle) {
+    int err = 0;
+    f = ntfsb_file_open(vol, mft, &err);
+    CHECK(f != NULL, "blockmap 寫（%s）：開啟 handle (err=%d)", tag, err);
+  }
+
+  // 在 offset 3 MB 寫 1 MB：[1 MB, 3 MB) 必須被補零，大小變 4 MB
+  int64_t off = 3 << 20, len = 1 << 20;
+  extent_list l = {0};
+  int rc = ntfsb_blockmap(vol, mft, off, len, true, collect_extent, &l);
+  CHECK(rc == 0 && l.count > 0, "blockmap 寫（%s）：rc=%d extents=%d", tag, rc, l.count);
+  CHECK(extents_cover(&l, off, len), "blockmap 寫（%s）：extent 覆蓋寫入範圍", tag);
+  ntfsb_attr a;
+  CHECK(ntfsb_getattr(vol, mft, &a) == 0 && a.size == (4u << 20),
+        "blockmap 寫（%s）：blockmap 後 size=%llu", tag, (unsigned long long)a.size);
+  CHECK(a.init_size == (3u << 20), "blockmap 寫（%s）：init_size 推到 3 MB (%llu)", tag,
+        (unsigned long long)a.init_size);
+
+  uint8_t *pat = malloc(len);
+  for (int64_t i = 0; i < len; i++) {
+    pat[i] = (uint8_t)(0x80 + (i % 97));
+  }
+  CHECK(kernel_write(dev, &l, off, len, pat) == 0, "blockmap 寫（%s）：假 kernel 寫入", tag);
+  rc = ntfsb_complete_io(vol, mft, off, len, true, false, use_handle);
+  CHECK(rc == 0, "blockmap 寫（%s）：complete_io (rc=%d)", tag, rc);
+  CHECK(ntfsb_getattr(vol, mft, &a) == 0 && a.init_size == (4u << 20) && a.size == (4u << 20),
+        "blockmap 寫（%s）：complete 後 size=init=4 MB (init=%llu)", tag, (unsigned long long)a.init_size);
+
+  // 讀回三段
+  uint8_t *buf = malloc(1 << 20);
+  int64_t r = ntfsb_read(vol, mft, 0, buf, 1 << 20);
+  CHECK(r == (1 << 20) && buf[0] == 0x11 && buf[(1 << 20) - 1] == 0x11, "blockmap 寫（%s）：原始段仍在", tag);
+  r = ntfsb_read(vol, mft, 1 << 20, buf, 1 << 20);
+  bool zero = (r == (1 << 20));
+  for (int64_t i = 0; zero && i < r; i += 4093) {
+    zero = buf[i] == 0;
+  }
+  CHECK(zero, "blockmap 寫（%s）：補零段是零", tag);
+  r = ntfsb_read(vol, mft, 3 << 20, buf, 1 << 20);
+  CHECK(r == (1 << 20) && memcmp(buf, pat, 1 << 20) == 0, "blockmap 寫（%s）：kernel 寫入的段讀回一致", tag);
+
+  // 失敗的 I/O：size 拉長但 init 不動，讀回是零
+  extent_list l2 = {0};
+  rc = ntfsb_blockmap(vol, mft, 5 << 20, 1 << 20, true, collect_extent, &l2);
+  CHECK(rc == 0, "blockmap 寫（%s）：失敗案例 blockmap (rc=%d)", tag, rc);
+  CHECK(kernel_write(dev, &l2, 5 << 20, 1 << 20, pat) == 0, "blockmap 寫（%s）：失敗案例假 kernel 寫入", tag);
+  rc = ntfsb_complete_io(vol, mft, 5 << 20, 1 << 20, true, true, use_handle);
+  CHECK(rc == 0, "blockmap 寫（%s）：失敗案例 complete_io (rc=%d)", tag, rc);
+  CHECK(ntfsb_getattr(vol, mft, &a) == 0 && a.size == (6u << 20) && a.init_size == (5u << 20),
+        "blockmap 寫（%s）：失敗後 size=6 MB、init=5 MB (size=%llu init=%llu)", tag,
+        (unsigned long long)a.size, (unsigned long long)a.init_size);
+  r = ntfsb_read(vol, mft, 5 << 20, buf, 4096);
+  CHECK(r == 4096 && buf[0] == 0 && buf[4095] == 0, "blockmap 寫（%s）：失敗段讀回零", tag);
+  extent_list l3 = {0};
+  rc = ntfsb_blockmap(vol, mft, 5 << 20, 4096, false, collect_extent, &l3);
+  CHECK(rc == 0 && l3.count == 1 && l3.items[0].zero_fill, "blockmap 寫（%s）：失敗段對 kernel 也是 ZeroFill", tag);
+
+  if (f) {
+    CHECK(ntfsb_file_close(f) == 0, "blockmap 寫（%s）：關閉 handle", tag);
+  }
+  free(pat);
+  free(buf);
+}
+
+/// write-back 快取一致性：慢路徑的小寫入必須在 blockmap 回覆前落盤
+static void test_cache_coherency(ntfsb_volume *vol, file_device *dev) {
+  uint64_t mft = make_file(vol, "koio_cache.bin", 64 << 10, 0x22);
+  CHECK(mft != 0, "快取一致性：建立 64 KB 檔案");
+  if (!mft) {
+    return;
+  }
+  CHECK(ntfsb_sync(vol) == 0, "快取一致性：sync");
+  // 8 KB 的慢路徑寫入會留在 write-back 快取裡
+  uint8_t small[8192];
+  memset(small, 0x33, sizeof(small));
+  CHECK(ntfsb_write(vol, mft, 4096, small, sizeof(small)) == (int64_t)sizeof(small), "快取一致性：慢路徑寫 8 KB");
+  extent_list l = {0};
+  int rc = ntfsb_blockmap(vol, mft, 0, 64 << 10, false, collect_extent, &l);
+  CHECK(rc == 0, "快取一致性：blockmap (rc=%d)", rc);
+  uint8_t got[64 << 10];
+  CHECK(kernel_read(dev, &l, 0, sizeof(got), got) == 0, "快取一致性：假 kernel 讀取");
+  CHECK(got[4096] == 0x33 && got[4096 + 8191] == 0x33 && got[0] == 0x22,
+        "快取一致性：kernel 看到慢路徑剛寫的資料（got[4096]=%02x）", got[4096]);
+  // 反向：kernel 寫完後橋接層讀到新資料（快取不能留舊副本）
+  uint8_t pat[4096];
+  memset(pat, 0x44, sizeof(pat));
+  extent_list lw = {0};
+  rc = ntfsb_blockmap(vol, mft, 0, 4096, true, collect_extent, &lw);
+  CHECK(rc == 0 && kernel_write(dev, &lw, 0, 4096, pat) == 0, "快取一致性：假 kernel 寫入前 4 KB");
+  CHECK(ntfsb_complete_io(vol, mft, 0, 4096, true, false, false) == 0, "快取一致性：complete_io");
+  uint8_t back[4096];
+  CHECK(ntfsb_read(vol, mft, 0, back, sizeof(back)) == (int64_t)sizeof(back) && back[0] == 0x44 && back[4095] == 0x44,
+        "快取一致性：橋接層讀到 kernel 寫的資料（back[0]=%02x）", back[0]);
+}
+
 int koio_test_run(ntfsb_volume *vol, file_device *dev) {
   failures = 0;
   printf("---- KOIO ----\n");
   test_eligibility();
   test_truncate_solid(vol);
   test_blockmap_read(vol, dev);
+  test_blockmap_write(vol, dev, false);
+  test_blockmap_write(vol, dev, true);
+  test_cache_coherency(vol, dev);
   return failures;
 }

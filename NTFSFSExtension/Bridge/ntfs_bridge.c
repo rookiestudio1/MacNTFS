@@ -2160,6 +2160,60 @@ static ntfsb_bcache *ntfsb_volume_bcache(ntfsb_volume *v) {
   return p ? p->cache : NULL;
 }
 
+/// 把 na 的 initialized_size 設為 size（記憶體與屬性記錄一起改）。
+/// libntfs-3g 沒有公開這個操作；做法與 ntfs_attr_pwrite 尾端相同。
+static int ntfsb_attr_set_initialized(ntfs_attr *na, int64_t size) {
+  if (size < 0 || size > na->data_size) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (size == na->initialized_size) {
+    return 0;
+  }
+  ntfs_attr_search_ctx *ctx = ntfs_attr_get_search_ctx(na->ni, NULL);
+  if (!ctx) {
+    return -1;
+  }
+  if (ntfs_attr_lookup(na->type, na->name, na->name_len, CASE_SENSITIVE, 0, NULL, 0, ctx)) {
+    ntfs_attr_put_search_ctx(ctx);
+    return -1;
+  }
+  na->initialized_size = size;
+  ctx->attr->initialized_size = cpu_to_sle64(size);
+  ntfs_inode_mark_dirty(ctx->ntfs_ino);
+  ntfs_attr_put_search_ctx(ctx);
+  return 0;
+}
+
+/// 把 [na->initialized_size, upto) 補零（會經由 ntfs_attr_pwrite 推進 initialized_size）。
+/// 用 >= 64 KB 的區塊寫，讓大部分繞過區塊快取直寫裝置。
+static int ntfsb_attr_zero_to(ntfs_attr *na, int64_t upto) {
+  enum { ZERO_CHUNK = 256 * 1024 };
+  if (upto <= na->initialized_size) {
+    return 0;
+  }
+  uint8_t *zeros = calloc(1, ZERO_CHUNK);
+  if (!zeros) {
+    errno = ENOMEM;
+    return -1;
+  }
+  int res = 0;
+  while (na->initialized_size < upto) {
+    int64_t pos = na->initialized_size;
+    int64_t n = upto - pos;
+    if (n > ZERO_CHUNK) {
+      n = ZERO_CHUNK;
+    }
+    s64 w = ntfs_attr_pwrite(na, pos, n, zeros);
+    if (w <= 0) {
+      res = -1;
+      break;
+    }
+  }
+  free(zeros);
+  return res;
+}
+
 /// 把 [start, end) 依 runlist 打包成 Data／ZeroFill extent。
 /// 回傳 0、1（packer 已滿）或負 errno。
 static int ntfsb_pack_runs(ntfsb_volume *v, ntfs_attr *na, int64_t start, int64_t end,
@@ -2249,7 +2303,28 @@ int ntfsb_blockmap(ntfsb_volume *v, uint64_t mft_no, int64_t offset, int64_t len
     if (!NAttrNonResident(na) || (na->data_flags & (ATTR_COMPRESSION_MASK | ATTR_IS_ENCRYPTED))) {
       res = -EINVAL;
     } else if (for_write) {
-      res = -EROFS;  // Task 5 補上
+      int64_t end = offset + length;
+      int rc = 0;
+      // 1. 確保 [offset, end) 有叢集：拉長時真的配置，不留洞
+      if (end > na->data_size && ntfs_attr_truncate_solid(na, end)) {
+        rc = ntfsb_neg_errno();
+      }
+      // 2. kernel 只會寫 [offset, end)，中間的洞要先在磁碟上補零
+      if (!rc && offset > na->initialized_size && ntfsb_attr_zero_to(na, offset)) {
+        rc = ntfsb_neg_errno();
+      }
+      // 3. 打包
+      if (!rc) {
+        rc = ntfsb_pack_runs(v, na, offset, end, cb, context);
+      }
+      if (rc >= 0) {
+        ni->flags |= FILE_ATTR_ARCHIVE;
+        ntfs_inode_update_times(ni, NTFS_UPDATE_MCTIME);
+        if (held) {
+          held->meta_dirty = true;
+        }
+      }
+      res = rc < 0 ? rc : 0;
     } else {
       int64_t end = offset + length;
       int64_t init = na->initialized_size;
@@ -2270,6 +2345,65 @@ int ntfsb_blockmap(ntfsb_volume *v, uint64_t mft_no, int64_t offset, int64_t len
     }
     if (!held) {
       ntfs_attr_close(na);
+    }
+  }
+exit:
+  if (ntfsb_close_inode(v, ni) && !res) {
+    res = ntfsb_neg_errno();
+  }
+  return res;
+}
+
+int ntfsb_complete_io(ntfsb_volume *v, uint64_t mft_no, int64_t offset, int64_t length,
+                      bool for_write, bool io_failed, bool defer_meta) {
+  if (!v || !v->vol || offset < 0 || length < 0) {
+    return -EINVAL;
+  }
+  if (!for_write) {
+    return 0;  // 讀取不更新 atime
+  }
+  if (NVolReadOnly(v->vol)) {
+    return -EROFS;
+  }
+  ntfs_inode *ni = ntfsb_open_inode(v, mft_no);
+  if (!ni) {
+    return ntfsb_neg_errno();
+  }
+  int res = 0;
+  if (ni->mrec->flags & MFT_RECORD_IS_DIRECTORY) {
+    res = -EISDIR;
+    goto exit;
+  }
+  {
+    ntfsb_file *held = ntfsb_find_file(v, mft_no);
+    ntfs_attr *na = held ? held->na : ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+    if (!na) {
+      res = ntfsb_neg_errno();
+      goto exit;
+    }
+    int64_t end = offset + length;
+    if (!io_failed) {
+      if (end > na->data_size && ntfs_attr_truncate_solid(na, end)) {
+        res = ntfsb_neg_errno();
+      } else if (end > na->initialized_size && ntfsb_attr_set_initialized(na, end)) {
+        res = ntfsb_neg_errno();
+      }
+    }
+    // 失敗的寫入：data_size 已在 blockmap 拉長，initialized_size 不推進，
+    // 於是 libntfs-3g 與 kernel（ZeroFill）讀到的都是零，兩邊一致。
+    if (!held) {
+      ntfs_attr_close(na);
+    }
+    if (!res) {
+      ni->flags |= FILE_ATTR_ARCHIVE;
+      ntfs_inode_update_times(ni, NTFS_UPDATE_MCTIME);
+      if (held) {
+        held->meta_dirty = true;
+        if (!defer_meta && ntfsb_file_flush(held)) {
+          res = ntfsb_neg_errno();
+        }
+      }
+      // 沒有 handle 時 ntfsb_close_inode 會真的關閉並寫回 MFT record
     }
   }
 exit:
