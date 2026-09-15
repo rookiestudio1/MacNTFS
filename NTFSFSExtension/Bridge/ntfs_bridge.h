@@ -168,8 +168,9 @@ int ntfsb_sync(ntfsb_volume *vol);
 // 橋接層只負責：判定哪些檔案能這樣做、解析 runlist、在 I/O 完成後更新大小與時間戳。
 // 交出去的叢集之後不能再經由區塊快取碰它，所以 ntfsb_blockmap 會先把範圍 flush 並失效。
 
-/// 依檔案屬性判定是否可走 KOIO：常駐、壓縮、加密、sparse 不行；
+/// 依檔案屬性判定是否可走 KOIO：壓縮、加密、sparse、非空的常駐檔案不行；
 /// initialized_size < size 且 initialized_size 不在叢集邊界也不行（半滿叢集的尾巴是垃圾）。
+/// 空的常駐檔案算合格（新檔案必須一開始就能走 KOIO），blockmap 會把它轉成非常駐。
 bool ntfsb_koio_eligible(const ntfsb_attr *attr, uint32_t cluster_size);
 
 /// 一段邏輯→實體對應。zero_fill 為 true 時 physical 無意義，該範圍讀成零。

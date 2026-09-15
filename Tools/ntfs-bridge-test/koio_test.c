@@ -44,7 +44,12 @@ static void test_eligibility(void) {
   CHECK(ntfsb_koio_eligible(&a, CLUSTER), "合格：一般非常駐檔案");
 
   a.resident = true;
-  CHECK(!ntfsb_koio_eligible(&a, CLUSTER), "不合格：常駐");
+  CHECK(!ntfsb_koio_eligible(&a, CLUSTER), "不合格：常駐且有內容");
+  a.size = 0;
+  a.init_size = 0;
+  CHECK(ntfsb_koio_eligible(&a, CLUSTER), "合格：常駐空檔（新檔案）");
+  a.size = 1 << 20;
+  a.init_size = a.size;
   a.resident = false;
 
   a.compressed = true;
@@ -368,6 +373,34 @@ static void test_blockmap_write(ntfsb_volume *vol, file_device *dev, bool use_ha
   free(buf);
 }
 
+/// 新建的空檔案（常駐）直接走 KOIO 寫入：blockmap 要先把它轉成非常駐
+static void test_write_new_file(ntfsb_volume *vol, file_device *dev) {
+  uint64_t mft = make_file(vol, "koio_new.bin", 0, 0);
+  CHECK(mft != 0, "新檔案：建立空檔案");
+  if (!mft) {
+    return;
+  }
+  ntfsb_attr a;
+  CHECK(ntfsb_getattr(vol, mft, &a) == 0 && a.resident && a.size == 0 && ntfsb_koio_eligible(&a, CLUSTER),
+        "新檔案：常駐、空、合格");
+  // 空檔案的讀取 blockmap：整段 ZeroFill 或沒有 extent 都可以，但不能失敗
+  extent_list lr = {0};
+  int rc = ntfsb_blockmap(vol, mft, 0, 4096, false, collect_extent, &lr);
+  CHECK(rc == 0, "新檔案：空檔案讀取 blockmap 不失敗 (rc=%d)", rc);
+  uint8_t pat[8192];
+  memset(pat, 0x55, sizeof(pat));
+  extent_list l = {0};
+  rc = ntfsb_blockmap(vol, mft, 0, sizeof(pat), true, collect_extent, &l);
+  CHECK(rc == 0 && l.count == 1 && !l.items[0].zero_fill, "新檔案：寫入 blockmap 拿到 Data extent (rc=%d n=%d)", rc, l.count);
+  CHECK(kernel_write(dev, &l, 0, sizeof(pat), pat) == 0, "新檔案：假 kernel 寫入 8 KB");
+  CHECK(ntfsb_complete_io(vol, mft, 0, sizeof(pat), true, false, false) == 0, "新檔案：complete_io");
+  CHECK(ntfsb_getattr(vol, mft, &a) == 0 && !a.resident && a.size == sizeof(pat) && a.init_size == sizeof(pat),
+        "新檔案：變成非常駐、size=init=8 KB (resident=%d size=%llu)", a.resident, (unsigned long long)a.size);
+  uint8_t back[8192];
+  CHECK(ntfsb_read(vol, mft, 0, back, sizeof(back)) == (int64_t)sizeof(back) && memcmp(back, pat, sizeof(back)) == 0,
+        "新檔案：橋接層讀回一致");
+}
+
 /// write-back 快取一致性：慢路徑的小寫入必須在 blockmap 回覆前落盤
 static void test_cache_coherency(ntfsb_volume *vol, file_device *dev) {
   uint64_t mft = make_file(vol, "koio_cache.bin", 64 << 10, 0x22);
@@ -407,6 +440,7 @@ int koio_test_run(ntfsb_volume *vol, file_device *dev) {
   test_blockmap_read(vol, dev);
   test_blockmap_write(vol, dev, false);
   test_blockmap_write(vol, dev, true);
+  test_write_new_file(vol, dev);
   test_cache_coherency(vol, dev);
   return failures;
 }

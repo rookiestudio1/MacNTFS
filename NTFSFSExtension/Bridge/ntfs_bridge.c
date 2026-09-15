@@ -2145,7 +2145,13 @@ bool ntfsb_koio_eligible(const ntfsb_attr *a, uint32_t cluster_size) {
   if (!a || a->type != NTFSB_TYPE_FILE || cluster_size == 0) {
     return false;
   }
-  if (a->resident || a->compressed || a->encrypted || a->sparse) {
+  if (a->compressed || a->encrypted || a->sparse) {
+    return false;
+  }
+  // 常駐檔案的資料在 MFT record 裡，沒有叢集可映射；但空檔案例外——
+  // kernel 只在 lookup / create / getattr 時取得這個旗標，寫入途中不會再問，
+  // 新檔案若一開始就 inhibit，整個檔案都會走慢路徑。空檔案交給 blockmap 時再轉成非常駐。
+  if (a->resident && a->size > 0) {
     return false;
   }
   if (a->init_size < a->size && (a->init_size % cluster_size) != 0) {
@@ -2300,8 +2306,31 @@ int ntfsb_blockmap(ntfsb_volume *v, uint64_t mft_no, int64_t offset, int64_t len
       res = ntfsb_neg_errno();
       goto exit;
     }
-    if (!NAttrNonResident(na) || (na->data_flags & (ATTR_COMPRESSION_MASK | ATTR_IS_ENCRYPTED))) {
+    if (!NAttrNonResident(na) && !NVolReadOnly(v->vol) && (for_write || na->data_size > 0)) {
+      // 常駐屬性沒有叢集：轉成非常駐才有東西可以交給 kernel。
+      // 正常只會在寫入空檔案時遇到（見 ntfsb_koio_eligible）；讀取常駐且有內容的檔案
+      // 代表 kernel 的旗標過期，轉換一樣正確，只是多占一個叢集。讀取空檔案不必轉。
+      if (ntfs_attr_force_non_resident(na)) {
+        res = ntfsb_neg_errno();
+        if (held) {
+          held->meta_dirty = true;
+        }
+        goto close_attr;
+      }
+      if (held) {
+        held->meta_dirty = true;
+      }
+    }
+    if (na->data_flags & (ATTR_COMPRESSION_MASK | ATTR_IS_ENCRYPTED)) {
       res = -EINVAL;
+    } else if (!NAttrNonResident(na)) {
+      // 沒轉換的常駐檔案：只有空檔案會被判定合格，整段以零呈現
+      if (na->data_size == 0) {
+        ntfsb_extent z = {offset, 0, length, true};
+        cb(context, &z);
+      } else {
+        res = -EINVAL;
+      }
     } else if (for_write) {
       int64_t end = offset + length;
       int rc = 0;
@@ -2343,6 +2372,7 @@ int ntfsb_blockmap(ntfsb_volume *v, uint64_t mft_no, int64_t offset, int64_t len
       }
       res = rc < 0 ? rc : 0;
     }
+close_attr:
     if (!held) {
       ntfs_attr_close(na);
     }
