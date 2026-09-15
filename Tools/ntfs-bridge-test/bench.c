@@ -1,0 +1,341 @@
+//
+//  bench.c
+//  ntfs-bridge-test
+//
+
+#include "bench.h"
+
+#include <errno.h>
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "file_device.h"
+#include "ntfs_bridge.h"
+
+// ---- 量測參數 ----
+#define BENCH_SEQ_BYTES      (128ull * 1024 * 1024)  ///< 循序讀寫總量
+#define BENCH_SEQ_CHUNK      (128ull * 1024)         ///< 循序讀寫每次大小
+#define BENCH_RAND_COUNT     4096                    ///< 隨機讀取次數
+#define BENCH_RAND_CHUNK     4096                    ///< 隨機讀取每次大小
+#define BENCH_SMALL_COUNT    2000                    ///< 小檔數量
+#define BENCH_SMALL_SIZE     1024                    ///< 小檔大小
+
+/// 單一項目的量測結果
+typedef struct bench_result {
+  const char *name;
+  double seconds;
+  uint64_t logical_bytes;  ///< 邏輯上處理的位元組數（0 表示這項以次數計）
+  uint64_t ops;            ///< 邏輯操作次數
+  const char *op_unit;     ///< ops 的單位名稱，例如 "檔/秒"
+  file_device_stats io;    ///< 期間的裝置 I/O 統計
+} bench_result;
+
+static double now_seconds(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+/// 可重現的簡易亂數，讓每次執行的隨機讀取位置一致，前後對照才有意義
+static uint64_t bench_rand(uint64_t *state) {
+  uint64_t x = *state;
+  x ^= x << 13;
+  x ^= x >> 7;
+  x ^= x << 17;
+  *state = x;
+  return x;
+}
+
+static void print_header(void) {
+  printf("\n%-14s %10s %12s %10s %10s %12s %10s %8s\n",
+         "項目", "耗時(s)", "吞吐", "讀次數", "寫次數",
+         "裝置讀寫(MB)", "放大倍率", "sync");
+  printf("%s\n", "--------------------------------------------------"
+                 "--------------------------------------------------");
+}
+
+static void print_result(const bench_result *r) {
+  char throughput[32];
+  if (r->logical_bytes > 0) {
+    double mbps = ((double)r->logical_bytes / (1024.0 * 1024.0)) / r->seconds;
+    snprintf(throughput, sizeof(throughput), "%.1f MB/s", mbps);
+  } else {
+    snprintf(throughput, sizeof(throughput), "%.0f %s",
+             (double)r->ops / r->seconds, r->op_unit ? r->op_unit : "op/s");
+  }
+
+  uint64_t dev_bytes = r->io.read_bytes + r->io.write_bytes;
+  double dev_mb = (double)dev_bytes / (1024.0 * 1024.0);
+
+  // 放大倍率：裝置實際搬運的位元組數 / 邏輯上要求的位元組數。
+  // 這是橋接層效率最直接的指標——runlist 重複重建、MFT 反覆寫回都會讓它變大。
+  char amp[16];
+  if (r->logical_bytes > 0) {
+    snprintf(amp, sizeof(amp), "%.2fx", (double)dev_bytes / (double)r->logical_bytes);
+  } else {
+    snprintf(amp, sizeof(amp), "-");
+  }
+
+  printf("%-14s %10.3f %12s %10" PRIu64 " %10" PRIu64 " %12.1f %10s %8" PRIu64 "\n",
+         r->name, r->seconds, throughput,
+         r->io.read_calls, r->io.write_calls, dev_mb, amp, r->io.sync_calls);
+}
+
+/// 取得目前統計與起始統計的差值
+static file_device_stats stats_delta(const file_device_stats *before,
+                                     const file_device_stats *after) {
+  file_device_stats d = {
+    .read_calls  = after->read_calls  - before->read_calls,
+    .read_bytes  = after->read_bytes  - before->read_bytes,
+    .write_calls = after->write_calls - before->write_calls,
+    .write_bytes = after->write_bytes - before->write_bytes,
+    .sync_calls  = after->sync_calls  - before->sync_calls,
+  };
+  return d;
+}
+
+/// 目錄走訪用：把每個項目的 MFT 編號收集起來，之後逐一 getattr
+typedef struct bench_walk_ctx {
+  uint64_t *mfts;
+  int count;
+  int cap;
+} bench_walk_ctx;
+
+static int bench_walk_cb(void *context,
+                         const char *name,
+                         size_t name_len,
+                         uint64_t mft_no,
+                         ntfsb_type type,
+                         int64_t cookie,
+                         int64_t next_cookie) {
+  (void)name;
+  (void)name_len;
+  (void)type;
+  (void)cookie;
+  (void)next_cookie;
+  bench_walk_ctx *c = context;
+  if (c->count >= c->cap) {
+    return 1;  // 緩衝區已滿，停止列舉
+  }
+  c->mfts[c->count++] = mft_no;
+  return 0;
+}
+
+int bench_run(const char *image_path, uint32_t block_size) {
+  file_device dev;
+  if (file_device_open(&dev, image_path) < 0) {
+    perror("開啟映像檔");
+    return 2;
+  }
+  ntfsb_device_callbacks cb = file_device_callbacks(&dev, block_size);
+
+  ntfsb_global_init();
+
+  int err = 0;
+  ntfsb_volume *vol = ntfsb_mount("bench", &cb, false, &err);
+  if (!vol) {
+    fprintf(stderr, "掛載失敗：errno=%d %s\n", err, strerror(err));
+    file_device_close(&dev);
+    return 1;
+  }
+  if (ntfsb_is_readonly(vol)) {
+    fprintf(stderr, "卷被掛載為唯讀，無法量測寫入\n");
+    ntfsb_umount(vol);
+    file_device_close(&dev);
+    return 1;
+  }
+
+  ntfsb_statfs_info sf;
+  if (ntfsb_statfs(vol, &sf) == 0) {
+    printf("映像檔 %s：叢集大小 %u，可用 %.1f MB\n",
+           image_path, sf.cluster_size,
+           (double)sf.free_clusters * sf.cluster_size / (1024.0 * 1024.0));
+  }
+  printf("循序 %llu MB（每次 %llu KB）／隨機 %d × %d B／小檔 %d × %d B\n",
+         BENCH_SEQ_BYTES / (1024 * 1024), BENCH_SEQ_CHUNK / 1024,
+         BENCH_RAND_COUNT, BENCH_RAND_CHUNK, BENCH_SMALL_COUNT, BENCH_SMALL_SIZE);
+
+  uint8_t *buf = malloc(BENCH_SEQ_CHUNK);
+  if (!buf) {
+    fprintf(stderr, "配置緩衝區失敗\n");
+    ntfsb_umount(vol);
+    file_device_close(&dev);
+    return 1;
+  }
+  memset(buf, 0xA5, BENCH_SEQ_CHUNK);
+
+  bench_result results[5];
+  int n = 0;
+  int rc = 0;
+  file_device_stats before, after;
+  double t0;
+
+  // ---- 1. 循序寫入 ----
+  uint64_t big_mft = 0;
+  rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "bench-seq.dat", NTFSB_TYPE_FILE, NULL, &big_mft);
+  if (rc) {
+    fprintf(stderr, "建立 bench-seq.dat 失敗：rc=%d\n", rc);
+    goto fail;
+  }
+  before = dev.stats;
+  t0 = now_seconds();
+  for (uint64_t off = 0; off < BENCH_SEQ_BYTES; off += BENCH_SEQ_CHUNK) {
+    int64_t w = ntfsb_write(vol, big_mft, (int64_t)off, buf, BENCH_SEQ_CHUNK);
+    if (w != (int64_t)BENCH_SEQ_CHUNK) {
+      fprintf(stderr, "循序寫入失敗 offset=%llu rc=%lld\n", off, (long long)w);
+      rc = 1;
+      goto fail;
+    }
+  }
+  ntfsb_sync(vol);
+  results[n].seconds = now_seconds() - t0;
+  after = dev.stats;
+  results[n].name = "循序寫入";
+  results[n].logical_bytes = BENCH_SEQ_BYTES;
+  results[n].ops = BENCH_SEQ_BYTES / BENCH_SEQ_CHUNK;
+  results[n].op_unit = NULL;
+  results[n].io = stats_delta(&before, &after);
+  n++;
+
+  // ---- 2. 循序讀取 ----
+  before = dev.stats;
+  t0 = now_seconds();
+  for (uint64_t off = 0; off < BENCH_SEQ_BYTES; off += BENCH_SEQ_CHUNK) {
+    int64_t r = ntfsb_read(vol, big_mft, (int64_t)off, buf, BENCH_SEQ_CHUNK);
+    if (r != (int64_t)BENCH_SEQ_CHUNK) {
+      fprintf(stderr, "循序讀取失敗 offset=%llu rc=%lld\n", off, (long long)r);
+      rc = 1;
+      goto fail;
+    }
+  }
+  results[n].seconds = now_seconds() - t0;
+  after = dev.stats;
+  results[n].name = "循序讀取";
+  results[n].logical_bytes = BENCH_SEQ_BYTES;
+  results[n].ops = BENCH_SEQ_BYTES / BENCH_SEQ_CHUNK;
+  results[n].op_unit = NULL;
+  results[n].io = stats_delta(&before, &after);
+  n++;
+
+  // ---- 3. 隨機讀取 ----
+  {
+    uint64_t state = 0x9E3779B97F4A7C15ull;
+    uint64_t max_off = BENCH_SEQ_BYTES - BENCH_RAND_CHUNK;
+    before = dev.stats;
+    t0 = now_seconds();
+    for (int i = 0; i < BENCH_RAND_COUNT; i++) {
+      uint64_t off = bench_rand(&state) % max_off;
+      off -= off % BENCH_RAND_CHUNK;
+      int64_t r = ntfsb_read(vol, big_mft, (int64_t)off, buf, BENCH_RAND_CHUNK);
+      if (r != BENCH_RAND_CHUNK) {
+        fprintf(stderr, "隨機讀取失敗 offset=%llu rc=%lld\n", off, (long long)r);
+        rc = 1;
+        goto fail;
+      }
+    }
+    results[n].seconds = now_seconds() - t0;
+    after = dev.stats;
+    results[n].name = "隨機讀取";
+    results[n].logical_bytes = (uint64_t)BENCH_RAND_COUNT * BENCH_RAND_CHUNK;
+    results[n].ops = BENCH_RAND_COUNT;
+    results[n].op_unit = NULL;
+    results[n].io = stats_delta(&before, &after);
+    n++;
+  }
+
+  // ---- 4. 小檔建立 ----
+  uint64_t small_dir = 0;
+  rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "bench-small", NTFSB_TYPE_DIR, NULL, &small_dir);
+  if (rc) {
+    fprintf(stderr, "建立 bench-small 目錄失敗：rc=%d\n", rc);
+    goto fail;
+  }
+  before = dev.stats;
+  t0 = now_seconds();
+  for (int i = 0; i < BENCH_SMALL_COUNT; i++) {
+    char name[64];
+    snprintf(name, sizeof(name), "f%05d.bin", i);
+    uint64_t mft = 0;
+    rc = ntfsb_create(vol, small_dir, name, NTFSB_TYPE_FILE, NULL, &mft);
+    if (rc) {
+      fprintf(stderr, "建立 %s 失敗：rc=%d\n", name, rc);
+      goto fail;
+    }
+    int64_t w = ntfsb_write(vol, mft, 0, buf, BENCH_SMALL_SIZE);
+    if (w != BENCH_SMALL_SIZE) {
+      fprintf(stderr, "寫入 %s 失敗：rc=%lld\n", name, (long long)w);
+      rc = 1;
+      goto fail;
+    }
+  }
+  ntfsb_sync(vol);
+  results[n].seconds = now_seconds() - t0;
+  after = dev.stats;
+  results[n].name = "小檔建立";
+  results[n].logical_bytes = 0;
+  results[n].ops = BENCH_SMALL_COUNT;
+  results[n].op_unit = "檔/秒";
+  results[n].io = stats_delta(&before, &after);
+  n++;
+
+  // ---- 5. 目錄走訪（readdir + 每項 getattr）----
+  {
+    // readdir 回呼把 mft 編號收集起來，之後逐一 getattr
+    bench_walk_ctx wc = { .mfts = malloc(sizeof(uint64_t) * (BENCH_SMALL_COUNT + 8)),
+                          .count = 0,
+                          .cap = BENCH_SMALL_COUNT + 8 };
+    if (!wc.mfts) {
+      fprintf(stderr, "配置走訪緩衝區失敗\n");
+      rc = 1;
+      goto fail;
+    }
+
+    before = dev.stats;
+    t0 = now_seconds();
+    int64_t pos = NTFSB_COOKIE_START;
+    while (pos != NTFSB_COOKIE_END) {
+      rc = ntfsb_readdir(vol, small_dir, &pos, bench_walk_cb, &wc);
+      if (rc) {
+        fprintf(stderr, "readdir 失敗：rc=%d\n", rc);
+        free(wc.mfts);
+        goto fail;
+      }
+    }
+    for (int i = 0; i < wc.count; i++) {
+      ntfsb_attr a;
+      rc = ntfsb_getattr(vol, wc.mfts[i], &a);
+      if (rc) {
+        fprintf(stderr, "getattr 失敗：mft=%llu rc=%d\n",
+                (unsigned long long)wc.mfts[i], rc);
+        free(wc.mfts);
+        goto fail;
+      }
+    }
+    results[n].seconds = now_seconds() - t0;
+    after = dev.stats;
+    results[n].name = "目錄走訪";
+    results[n].logical_bytes = 0;
+    results[n].ops = (uint64_t)wc.count;
+    results[n].op_unit = "項/秒";
+    results[n].io = stats_delta(&before, &after);
+    n++;
+    free(wc.mfts);
+  }
+
+  print_header();
+  for (int i = 0; i < n; i++) {
+    print_result(&results[i]);
+  }
+  printf("\n");
+  rc = 0;
+
+fail:
+  free(buf);
+  ntfsb_umount(vol);
+  file_device_close(&dev);
+  return rc;
+}

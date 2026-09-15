@@ -3,8 +3,11 @@
 //  ntfs-bridge-test
 //
 //  以一般檔案（NTFS 映像檔）模擬區塊裝置，對 ntfs_bridge 做煙霧測試。
-//  用法：ntfs-bridge-test <image> [block_size]
+//  用法：
+//    ntfs-bridge-test <image> [block_size]         正確性測試
+//    ntfs-bridge-test bench <image> [block_size]   效能量測
 //  所有測試通過時回傳 0，否則印出失敗項目並回傳 1。
+//  映像檔可用 Scripts/make-test-image.sh 產生。
 //
 
 #include <errno.h>
@@ -16,30 +19,9 @@
 #include <sys/stat.h>
 #include <sys/xattr.h>
 
+#include "bench.h"
+#include "file_device.h"
 #include "ntfs_bridge.h"
-
-/// 用檔案描述子模擬的裝置
-typedef struct file_device {
-  int fd;
-  int64_t size;
-} file_device;
-
-static int64_t file_pread(void *ctx, void *buf, int64_t count, int64_t offset) {
-  file_device *d = ctx;
-  ssize_t r = pread(d->fd, buf, (size_t)count, offset);
-  return r < 0 ? -1 : (int64_t)r;
-}
-
-static int64_t file_pwrite(void *ctx, const void *buf, int64_t count, int64_t offset) {
-  file_device *d = ctx;
-  ssize_t r = pwrite(d->fd, buf, (size_t)count, offset);
-  return r < 0 ? -1 : (int64_t)r;
-}
-
-static int file_sync(void *ctx) {
-  file_device *d = ctx;
-  return fsync(d->fd);
-}
 
 static int failures = 0;
 
@@ -104,30 +86,37 @@ static int xattr_collect(void *ctx, const char *name, size_t len) {
   return 0;
 }
 
+static void usage(const char *prog) {
+  fprintf(stderr,
+          "用法：\n"
+          "  %s <ntfs 映像檔> [block_size]         正確性測試\n"
+          "  %s bench <ntfs 映像檔> [block_size]   效能量測\n",
+          prog, prog);
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) {
-    fprintf(stderr, "用法：%s <ntfs 映像檔> [block_size]\n", argv[0]);
+    usage(argv[0]);
     return 2;
   }
+
+  // bench 子命令
+  if (strcmp(argv[1], "bench") == 0) {
+    if (argc < 3) {
+      usage(argv[0]);
+      return 2;
+    }
+    uint32_t bs = argc > 3 ? (uint32_t)atoi(argv[3]) : 512;
+    return bench_run(argv[2], bs);
+  }
+
   uint32_t block_size = argc > 2 ? (uint32_t)atoi(argv[2]) : 512;
-  file_device dev = { .fd = open(argv[1], O_RDWR) };
-  if (dev.fd < 0) {
+  file_device dev;
+  if (file_device_open(&dev, argv[1]) < 0) {
     perror("open");
     return 2;
   }
-  struct stat st;
-  fstat(dev.fd, &st);
-  dev.size = st.st_size;
-
-  ntfsb_device_callbacks cb = {
-    .context = &dev,
-    .block_size = block_size,
-    .block_count = (uint64_t)dev.size / block_size,
-    .writable = true,
-    .pread = file_pread,
-    .pwrite = file_pwrite,
-    .sync = file_sync,
-  };
+  ntfsb_device_callbacks cb = file_device_callbacks(&dev, block_size);
 
   ntfsb_global_init();
 
@@ -363,7 +352,7 @@ int main(int argc, char **argv) {
     ntfsb_umount(vol);
   }
 
-  close(dev.fd);
+  file_device_close(&dev);
   printf("\n%s：%d 項失敗\n", failures ? "測試失敗" : "全部通過", failures);
   return failures ? 1 : 0;
 }

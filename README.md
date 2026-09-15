@@ -73,18 +73,30 @@ sudo mount -F -t ntfs3g -o rdonly /dev/disk4s1 /Volumes/NTFS   # 備援：直接
 
 ### 橋接層（不需要簽章與 FSKit）
 
-用 ntfs-3g 附的 `mkntfs` 建立映像檔後執行 `ntfs-bridge-test`：
+用 `Scripts/make-test-image.sh` 建立映像檔後執行 `ntfs-bridge-test`：
 
 ```bash
-# 建立 64 MB 測試映像檔（mkntfs 可從 ThirdParty/build 內的原始碼另外編譯 ntfsprogs 取得）
-dd if=/dev/zero of=test.img bs=1m count=64
-mkntfs -F -f -L TestNTFS test.img
+# 建立測試映像檔（第一次會自動編出本機用的 mkntfs，放在 ThirdParty/build/host-tools/）
+Scripts/make-test-image.sh 512 /tmp/test.img
 
 xcodebuild -scheme ntfs-bridge-test -configuration Debug build
-"$(xcodebuild -scheme ntfs-bridge-test -showBuildSettings | awk '/ BUILT_PRODUCTS_DIR/{print $3}')/ntfs-bridge-test" test.img
+build/Debug/ntfs-bridge-test /tmp/test.img
 ```
 
 測試涵蓋：probe、讀寫掛載、statfs、mkdir、建立/讀寫/未對齊寫入/truncate、不分大小寫查找、xattr（具名串流）、符號連結、硬連結、Windows 禁用字元、時間戳與旗標、目錄列舉（完整與分段 cookie）、重新命名與覆蓋、刪除、卷標、唯讀重掛與 EROFS。
+
+### 效能量測
+
+`bench` 子命令直接對映像檔量橋接層 + libntfs-3g 這一段，不經過 FSKit，所以改動橋接層之後可以立刻驗證效果：
+
+```bash
+Scripts/make-test-image.sh 512 /tmp/bench.img   # 每次量測都用全新映像檔
+build/Debug/ntfs-bridge-test bench /tmp/bench.img
+```
+
+量測循序寫入、循序讀取、隨機讀取、小檔建立、目錄走訪五項。
+
+**看「裝置讀次數／寫次數／放大倍率」，不要只看耗時。** 映像檔通常整份落在 page cache 裡，耗時量到的主要是 CPU 與呼叫次數的成本；裝置 I/O 計數則是確定性的，前後對照不會有雜訊。放大倍率＝裝置實際搬運位元組數 ÷ 邏輯要求位元組數，橋接層每多做一次 MFT 讀寫或 runlist 重建都會直接反映在這個數字上。
 
 ### 端對端
 

@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		02BED5F5A93A5760A00B5A59 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 49FEC58939857A4D65EBE668 /* CoreFoundation.framework */; };
 		0ED0EC5966DD56BCA6283525 /* DiskMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AB90A9826520387FD25E403 /* DiskMonitor.swift */; };
+		1D26780F6B3E1D20022D1BEF /* bench.c in Sources */ = {isa = PBXBuildFile; fileRef = 176E065ADDE8F658BC92B4E2 /* bench.c */; };
 		2EF47DD03C37441FA71F488D /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24483615219273E2D3951668 /* AppState.swift */; };
 		45505E8432E88C1AF4C26D49 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28B97125E9945E3AF77E3D99 /* MenuBarView.swift */; };
 		49A9D6DAAD3BD0E2B741810F /* MainWindowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F02648F286948D227D5C5B47 /* MainWindowView.swift */; };
@@ -28,6 +29,7 @@
 		DFD0522BAD5C10D252EFB78D /* MacNTFSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFA3C61DE05BFB766618BC4A /* MacNTFSApp.swift */; };
 		E5F564CE72661427F227BBEE /* NTFSVolume.m in Sources */ = {isa = PBXBuildFile; fileRef = 74D6F986BFBC42D1334A5879 /* NTFSVolume.m */; };
 		EC4090364C359A467F0FB9A0 /* NTFSBlockDevice.m in Sources */ = {isa = PBXBuildFile; fileRef = C8EDACFB0086E09C2161968B /* NTFSBlockDevice.m */; };
+		ED70DE5378D6DE8CF27641B4 /* file_device.c in Sources */ = {isa = PBXBuildFile; fileRef = 28F642F7D15C64994CD1A3EB /* file_device.c */; };
 		F773E6D9214EB91704A11DA1 /* NTFSFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = CF816C3E8DCFCE7FFC3D0E1E /* NTFSFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -59,9 +61,11 @@
 		07D1D0231825219D57386D47 /* MacNTFS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacNTFS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0EA00E89777152C833A1177A /* ExtensionStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionStatus.swift; sourceTree = "<group>"; };
 		0F7A3EF5D1408FFEF46A7B69 /* NTFSVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSVolume.swift; sourceTree = "<group>"; };
+		176E065ADDE8F658BC92B4E2 /* bench.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bench.c; sourceTree = "<group>"; };
 		24483615219273E2D3951668 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		25C794AC55C7794CEA6AEB14 /* FSKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = FSKit.framework; path = System/Library/Frameworks/FSKit.framework; sourceTree = SDKROOT; };
 		28B97125E9945E3AF77E3D99 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		28F642F7D15C64994CD1A3EB /* file_device.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = file_device.c; sourceTree = "<group>"; };
 		49FEC58939857A4D65EBE668 /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT; };
 		6AB90A9826520387FD25E403 /* DiskMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskMonitor.swift; sourceTree = "<group>"; };
 		74D6F986BFBC42D1334A5879 /* NTFSVolume.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NTFSVolume.m; sourceTree = "<group>"; };
@@ -71,6 +75,7 @@
 		95790297288FEF98B081E0F7 /* NTFSVolume.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NTFSVolume.h; sourceTree = "<group>"; };
 		A2C02552D112D5C0DE2FD5E4 /* NTFSFSExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSFSExtension.swift; sourceTree = "<group>"; };
 		B0447C849E3A8B968B1EF981 /* main.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = main.c; sourceTree = "<group>"; };
+		B0EC0C1D487A6C6BBF5E2D73 /* file_device.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = file_device.h; sourceTree = "<group>"; };
 		B4241E714800F6070FCF05A5 /* NTFSItem.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NTFSItem.m; sourceTree = "<group>"; };
 		B7FFB4C4D4B837AF19B7B449 /* NTFSItem.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NTFSItem.h; sourceTree = "<group>"; };
 		BB58BBEAF88893B7E60B1DDE /* NTFSFileSystem.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NTFSFileSystem.m; sourceTree = "<group>"; };
@@ -83,6 +88,7 @@
 		CF816C3E8DCFCE7FFC3D0E1E /* NTFSFSExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = NTFSFSExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D6ADCC6D3C79A7D98712A36D /* NTFSFSExtension-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "NTFSFSExtension-Bridging-Header.h"; sourceTree = "<group>"; };
 		D6CD8A1150D111ADD9BEAEAF /* VolumeListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeListView.swift; sourceTree = "<group>"; };
+		E28EDC38EE0586A80D79B425 /* bench.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bench.h; sourceTree = "<group>"; };
 		F02648F286948D227D5C5B47 /* MainWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -129,6 +135,10 @@
 		966D1C2FE4F57FBD3AD5F162 /* ntfs-bridge-test */ = {
 			isa = PBXGroup;
 			children = (
+				176E065ADDE8F658BC92B4E2 /* bench.c */,
+				E28EDC38EE0586A80D79B425 /* bench.h */,
+				28F642F7D15C64994CD1A3EB /* file_device.c */,
+				B0EC0C1D487A6C6BBF5E2D73 /* file_device.h */,
 				B0447C849E3A8B968B1EF981 /* main.c */,
 			);
 			path = "ntfs-bridge-test";
@@ -386,6 +396,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1D26780F6B3E1D20022D1BEF /* bench.c in Sources */,
+				ED70DE5378D6DE8CF27641B4 /* file_device.c in Sources */,
 				AB6CEE592AAEAF31A1884D6D /* main.c in Sources */,
 				56B831513AAE45E42DC79153 /* ntfs_bridge.c in Sources */,
 			);
