@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
 
 #include "file_device.h"
 #include "ntfs_bridge.h"
@@ -96,6 +97,79 @@ static file_device_stats stats_delta(const file_device_stats *before,
     .sync_calls  = after->sync_calls  - before->sync_calls,
   };
   return d;
+}
+
+
+// MARK: - 混合負載下的中繼資料延遲
+//
+// 橋接層本身不做序列化（呼叫端負責），所以這裡用一把互斥鎖複製 NTFSVolume
+// 目前的粗鎖，量到的就是今天實際的行為：大檔傳輸進行中，一個 getattr 要等多久。
+// 這是「複製檔案時 Finder 卡住」的直接量化。
+
+typedef struct bench_load_ctx {
+  ntfsb_volume *vol;
+  pthread_mutex_t *lock;
+  uint64_t mft;
+  volatile int stop;
+  uint64_t chunks;
+} bench_load_ctx;
+
+static void *bench_load_thread(void *arg) {
+  bench_load_ctx *c = arg;
+  uint8_t *buf = malloc(BENCH_SEQ_CHUNK);
+  if (!buf) {
+    return NULL;
+  }
+  int64_t off = 0;
+  while (!c->stop) {
+    pthread_mutex_lock(c->lock);
+    int64_t r = ntfsb_read(c->vol, c->mft, off, buf, BENCH_SEQ_CHUNK);
+    pthread_mutex_unlock(c->lock);
+    if (r <= 0) {
+      off = 0;
+    } else {
+      off += r;
+      c->chunks++;
+      if ((uint64_t)off >= BENCH_SEQ_BYTES) {
+        off = 0;
+      }
+    }
+  }
+  free(buf);
+  return NULL;
+}
+
+static int cmp_double(const void *a, const void *b) {
+  double x = *(const double *)a, y = *(const double *)b;
+  return (x > y) - (x < y);
+}
+
+/// 量 count 次 getattr 的延遲分布（微秒）
+static void bench_metadata_latency(ntfsb_volume *vol,
+                                   pthread_mutex_t *lock,
+                                   const uint64_t *mfts,
+                                   int count,
+                                   double *p50,
+                                   double *p99,
+                                   double *pmax) {
+  double *samples = malloc(sizeof(double) * (size_t)count);
+  if (!samples) {
+    *p50 = *p99 = *pmax = 0;
+    return;
+  }
+  for (int i = 0; i < count; i++) {
+    ntfsb_attr a;
+    double t = now_seconds();
+    pthread_mutex_lock(lock);
+    ntfsb_getattr(vol, mfts[i], &a);
+    pthread_mutex_unlock(lock);
+    samples[i] = (now_seconds() - t) * 1e6;
+  }
+  qsort(samples, (size_t)count, sizeof(double), cmp_double);
+  *p50 = samples[count / 2];
+  *p99 = samples[(int)((double)count * 0.99)];
+  *pmax = samples[count - 1];
+  free(samples);
 }
 
 /// 目錄走訪用：把每個項目的 MFT 編號收集起來，之後逐一 getattr
@@ -405,6 +479,28 @@ int bench_run(const char *image_path, uint32_t block_size) {
     results[n].op_unit = "項/秒";
     results[n].io = stats_delta(&before, &after);
     n++;
+
+    // ---- 7. 混合負載下的中繼資料延遲 ----
+    {
+      int sample_count = wc.count < 2000 ? wc.count : 2000;
+      pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+      double idle50 = 0, idle99 = 0, idlemax = 0;
+      bench_metadata_latency(vol, &lock, wc.mfts, sample_count, &idle50, &idle99, &idlemax);
+
+      bench_load_ctx ctx = { .vol = vol, .lock = &lock, .mft = big_mft, .stop = 0, .chunks = 0 };
+      pthread_t th;
+      double busy50 = 0, busy99 = 0, busymax = 0;
+      if (pthread_create(&th, NULL, bench_load_thread, &ctx) == 0) {
+        bench_metadata_latency(vol, &lock, wc.mfts, sample_count, &busy50, &busy99, &busymax);
+        ctx.stop = 1;
+        pthread_join(th, NULL);
+      }
+
+      printf("\n中繼資料延遲（getattr × %d，微秒）\n", sample_count);
+      printf("  %-22s p50 %8.1f  p99 %8.1f  最大 %8.1f\n", "無背景負載", idle50, idle99, idlemax);
+      printf("  %-22s p50 %8.1f  p99 %8.1f  最大 %8.1f  （背景讀取 %llu 個 128 KB 區塊）\n",
+             "大檔讀取進行中", busy50, busy99, busymax, (unsigned long long)ctx.chunks);
+    }
     free(wc.mfts);
   }
 
