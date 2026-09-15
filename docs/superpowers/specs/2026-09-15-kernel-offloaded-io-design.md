@@ -1,7 +1,9 @@
 # Kernel Offloaded I/O（KOIO）設計文件
 
 日期：2026-09-15
-狀態：設計已審閱，待撰寫實作計畫
+狀態：橋接層已完成並通過測試；FSKit 層啟用因 kernel 死結暫時關閉（見第 13 節）。
+`ntfsb_koio_eligible` 實作簽章改為 `(const ntfsb_attr *, uint32_t cluster_size)`，
+且空的常駐檔案視為合格（blockmap 時轉非常駐，因為 kernel 只在 lookup/create/getattr 取旗標）。
 
 ## 1. 目標
 
@@ -184,3 +186,22 @@ int ntfsb_bcache_flush_range(ntfsb_bcache *c, int64_t offset, int64_t count);
 - FSKit KOIO 文件簡略：kernel 端 extent 快取壽命、`ZeroFill` 範圍被寫入後是否重取映射、Write blockmap 是否會超過 EOF，只能靠里程碑 1／2 實測。若發現 `ZeroFill` 範圍被寫入後 kernel 不重取映射，備案是 Write blockmap 一律先把 `[init_size, offset+length)` 補零到磁碟。
 - `truncate_solid` 改變既有慢路徑的拉長行為（真的占用空間），要在 README 記下。
 - 端對端測試前必須先卸載所有由本延伸功能掛載的實體碟（見專案記憶），否則 `fskitd` 會留下殘留狀態。
+
+## 13. 端對端發現：讀寫掛載的 kernel 死結（2026-09-15）
+
+里程碑 1／2 端對端測試時，凡是對**讀寫掛載**的卷寫入（`cp` 一開檔即觸發）就會讓 kernel 的 lifs 層死結：
+
+- 延伸功能程序全程閒置（所有執行緒停在 `mach_msg`／`__workq_kernreturn`），代表請求根本沒送達延伸功能。
+- kernel 日誌在掛載後只到 `lifs_enable_lowspace_sync_write` 就停止，之後對該卷再無任何 lifs 訊息。
+- 連 `diskutil unmount force` 都卡住；`kill -9` 延伸功能程序也無法解除，只能重開機。NTFS 本身與 libntfs-3g 中繼資料不受損（與既有的 `fskitd` 殘留警告一致）。
+
+推測成因：新建檔案在第一次 `getattr` 之前，kernel 預設它可走 KOIO（因為卷宣告 `FSSupportsKernelOffloadedIO`），於是對 `blockmapFile(write)` 送出請求並持有該檔案範圍的 lifs 鎖等待回覆；而我們在 `ntfsb_blockmap`（寫入）內配置叢集與補零時，會同步呼叫 `FSBlockDeviceResource` 寫入——這條路又回到 lifs，需要 kernel 正持有的鎖，形成 kernel↔延伸功能的鎖循環。
+
+影響評估：這是設計裡「在 `blockmapFile` 內做空間配置」的根本問題，不是實作 bug——橋接層 `ntfsb_blockmap`／`ntfsb_complete_io`／`truncate_solid` 的單元測試（含假 kernel 直接對映像檔 I/O）全數通過。純讀取路徑不配置空間，理論上不受影響，但尚未取得乾淨的讀取端對端佐證（測試都先卡在寫入）。
+
+目前處置：`FSSupportsKernelOffloadedIO` 設回 `false`（commit 48666ea），保護使用者平常讀寫掛載的實體碟。全部橋接層程式碼與測試保留。
+
+後續方向（待在可頻繁重開機的環境驗證）：
+1. 把空間配置移出 `blockmapFile`——kernel 呼叫 blockmap 時所有叢集都應已配置好。做法是實作 `FSVolumePreallocateOperations`（第 10 節），或在 create／首次寫入的慢路徑先把檔案配置到位，讓 blockmap 純粹回報既有 runlist、不做任何裝置寫入。
+2. 若步驟 1 後 blockmap 仍需補零（`[init_size, offset)`），改由 `completeIO` 或慢路徑處理，確保 blockmap 期間零裝置 I/O。
+3. 先只在唯讀掛載開 KOIO 取得讀取路徑的乾淨佐證，再回頭處理寫入。
