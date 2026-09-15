@@ -5,6 +5,7 @@
 
 #import "NTFSVolume.h"
 #import "NTFSItem.h"
+#import "NTFSFairLock.h"
 #import <os/log.h>
 #import <sys/stat.h>
 #import <sys/fcntl.h>
@@ -48,7 +49,7 @@ static inline struct timespec NTFSTimespec(struct timespec ts) {
 
 @interface NTFSVolume ()
 @property (nonatomic, strong) NTFSBlockDevice *device;
-@property (nonatomic, strong) NSRecursiveLock *lock;
+@property (nonatomic, strong) NTFSFairLock *lock;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NTFSItem *> *items;
 @property (nonatomic, strong, nullable) NTFSItem *rootItem;
 @property (nonatomic) uint32_t uid;
@@ -79,7 +80,7 @@ static inline struct timespec NTFSTimespec(struct timespec ts) {
   self = [super initWithVolumeID:volumeID volumeName:volumeName];
   if (self) {
     _device = device;
-    _lock = [[NSRecursiveLock alloc] init];
+    _lock = [[NTFSFairLock alloc] init];
     _items = [NSMutableDictionary dictionary];
     _uid = NTFSDefaultUID;
     _gid = NTFSDefaultGID;

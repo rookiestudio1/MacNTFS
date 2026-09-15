@@ -22,6 +22,7 @@
 #include "bcache_test.h"
 #include "ntfs_blockcache.h"
 #include "bench.h"
+#include "fairlock_test.h"
 #include "file_device.h"
 #include "ntfs_bridge.h"
 
@@ -112,7 +113,8 @@ int main(int argc, char **argv) {
     return bench_run(argv[2], bs);
   }
 
-  // 區塊快取不需要映像檔，先跑
+  // 這兩項不需要映像檔，先跑
+  failures += fairlock_test_run();
   failures += bcache_test_run();
 
   uint32_t block_size = argc > 2 ? (uint32_t)atoi(argv[2]) : 512;

@@ -15,6 +15,7 @@
 #include <pthread.h>
 
 #include "file_device.h"
+#include "ntfs_fairlock.h"
 #include "ntfs_bridge.h"
 
 // ---- 量測參數 ----
@@ -102,13 +103,13 @@ static file_device_stats stats_delta(const file_device_stats *before,
 
 // MARK: - 混合負載下的中繼資料延遲
 //
-// 橋接層本身不做序列化（呼叫端負責），所以這裡用一把互斥鎖複製 NTFSVolume
-// 目前的粗鎖，量到的就是今天實際的行為：大檔傳輸進行中，一個 getattr 要等多久。
+// 橋接層本身不做序列化（呼叫端負責），所以這裡用 NTFSVolume 實際使用的那把
+// FIFO 鎖，量到的就是實際行為：大檔傳輸進行中，一個 getattr 要等多久。
 // 這是「複製檔案時 Finder 卡住」的直接量化。
 
 typedef struct bench_load_ctx {
   ntfsb_volume *vol;
-  pthread_mutex_t *lock;
+  ntfsb_fairlock *lock;
   uint64_t mft;
   volatile int stop;
   uint64_t chunks;
@@ -122,9 +123,9 @@ static void *bench_load_thread(void *arg) {
   }
   int64_t off = 0;
   while (!c->stop) {
-    pthread_mutex_lock(c->lock);
+    ntfsb_fairlock_lock(c->lock);
     int64_t r = ntfsb_read(c->vol, c->mft, off, buf, BENCH_SEQ_CHUNK);
-    pthread_mutex_unlock(c->lock);
+    ntfsb_fairlock_unlock(c->lock);
     if (r <= 0) {
       off = 0;
     } else {
@@ -146,7 +147,7 @@ static int cmp_double(const void *a, const void *b) {
 
 /// 量 count 次 getattr 的延遲分布（微秒）
 static void bench_metadata_latency(ntfsb_volume *vol,
-                                   pthread_mutex_t *lock,
+                                   ntfsb_fairlock *lock,
                                    const uint64_t *mfts,
                                    int count,
                                    double *p50,
@@ -160,9 +161,9 @@ static void bench_metadata_latency(ntfsb_volume *vol,
   for (int i = 0; i < count; i++) {
     ntfsb_attr a;
     double t = now_seconds();
-    pthread_mutex_lock(lock);
+    ntfsb_fairlock_lock(lock);
     ntfsb_getattr(vol, mfts[i], &a);
-    pthread_mutex_unlock(lock);
+    ntfsb_fairlock_unlock(lock);
     samples[i] = (now_seconds() - t) * 1e6;
   }
   qsort(samples, (size_t)count, sizeof(double), cmp_double);
@@ -483,7 +484,8 @@ int bench_run(const char *image_path, uint32_t block_size) {
     // ---- 7. 混合負載下的中繼資料延遲 ----
     {
       int sample_count = wc.count < 2000 ? wc.count : 2000;
-      pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+      ntfsb_fairlock lock;
+      ntfsb_fairlock_init(&lock);
       double idle50 = 0, idle99 = 0, idlemax = 0;
       bench_metadata_latency(vol, &lock, wc.mfts, sample_count, &idle50, &idle99, &idlemax);
 
@@ -500,6 +502,7 @@ int bench_run(const char *image_path, uint32_t block_size) {
       printf("  %-22s p50 %8.1f  p99 %8.1f  最大 %8.1f\n", "無背景負載", idle50, idle99, idlemax);
       printf("  %-22s p50 %8.1f  p99 %8.1f  最大 %8.1f  （背景讀取 %llu 個 128 KB 區塊）\n",
              "大檔讀取進行中", busy50, busy99, busymax, (unsigned long long)ctx.chunks);
+      ntfsb_fairlock_destroy(&lock);
     }
     free(wc.mfts);
   }
