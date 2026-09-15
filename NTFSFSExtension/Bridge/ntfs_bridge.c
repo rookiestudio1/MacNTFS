@@ -858,6 +858,22 @@ int ntfsb_getattr(ntfsb_volume *v, uint64_t mft_no, ntfsb_attr *out) {
       // Interix 符號連結：大小為目標長度
       out->size = (uint64_t)(na->data_size - offsetof(INTX_FILE, target)) / sizeof(ntfschar);
     }
+    if (out->type == NTFSB_TYPE_FILE) {
+      // KOIO 合格判定需要 $DATA 是否常駐與 initialized_size；有 handle 就借用它的 attr
+      ntfsb_file *held = ntfsb_find_file(v, mft_no);
+      ntfs_attr *da = held ? held->na : (na ? na : ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0));
+      if (da) {
+        out->resident = !NAttrNonResident(da);
+        out->init_size = (uint64_t)da->initialized_size;
+        bool borrowed = (held && da == held->na) || (da == na);
+        if (!borrowed) {
+          ntfs_attr_close(da);
+        }
+      } else {
+        // 開不了 $DATA 的檔案不交給 kernel
+        out->resident = true;
+      }
+    }
   }
   if (na) {
     ntfs_attr_close(na);
@@ -2116,4 +2132,19 @@ exit:
     res = ntfsb_neg_errno();
   }
   return res;
+}
+
+// MARK: - Kernel offloaded I/O
+
+bool ntfsb_koio_eligible(const ntfsb_attr *a, uint32_t cluster_size) {
+  if (!a || a->type != NTFSB_TYPE_FILE || cluster_size == 0) {
+    return false;
+  }
+  if (a->resident || a->compressed || a->encrypted || a->sparse) {
+    return false;
+  }
+  if (a->init_size < a->size && (a->init_size % cluster_size) != 0) {
+    return false;
+  }
+  return true;
 }

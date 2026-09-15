@@ -10,6 +10,7 @@
 		02BED5F5A93A5760A00B5A59 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 49FEC58939857A4D65EBE668 /* CoreFoundation.framework */; };
 		0ED0EC5966DD56BCA6283525 /* DiskMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AB90A9826520387FD25E403 /* DiskMonitor.swift */; };
 		1271150448574DF3C73304BC /* bcache_test.c in Sources */ = {isa = PBXBuildFile; fileRef = FE6AFC484EFFA62F957CA842 /* bcache_test.c */; };
+		1CBA0B86556210CE7427E882 /* koio_test.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E5670A303E07B20C489A459 /* koio_test.c */; };
 		1D26780F6B3E1D20022D1BEF /* bench.c in Sources */ = {isa = PBXBuildFile; fileRef = 176E065ADDE8F658BC92B4E2 /* bench.c */; };
 		23BD57C5C09843043640572F /* ntfs_blockcache.c in Sources */ = {isa = PBXBuildFile; fileRef = C6EC8A5B3A21AF45458DB709 /* ntfs_blockcache.c */; };
 		2EF47DD03C37441FA71F488D /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24483615219273E2D3951668 /* AppState.swift */; };
@@ -76,10 +77,12 @@
 		25C794AC55C7794CEA6AEB14 /* FSKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = FSKit.framework; path = System/Library/Frameworks/FSKit.framework; sourceTree = SDKROOT; };
 		28B97125E9945E3AF77E3D99 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		28F642F7D15C64994CD1A3EB /* file_device.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = file_device.c; sourceTree = "<group>"; };
+		2E5670A303E07B20C489A459 /* koio_test.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = koio_test.c; sourceTree = "<group>"; };
 		42C6FB752623335F67ECB21C /* readdir_test.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = readdir_test.h; sourceTree = "<group>"; };
 		49FEC58939857A4D65EBE668 /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT; };
 		5A64B93F48BC85939C5A10F2 /* NTFSFairLock.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NTFSFairLock.m; sourceTree = "<group>"; };
 		5CB1DD3FED21D004EC53C9CB /* NTFSFairLock.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NTFSFairLock.h; sourceTree = "<group>"; };
+		672FFFE150BCF7F4FE32CDC4 /* koio_test.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = koio_test.h; sourceTree = "<group>"; };
 		6AB90A9826520387FD25E403 /* DiskMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskMonitor.swift; sourceTree = "<group>"; };
 		74D6F986BFBC42D1334A5879 /* NTFSVolume.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NTFSVolume.m; sourceTree = "<group>"; };
 		75431F68B44BB7116962FEB8 /* NTFSFileSystem.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NTFSFileSystem.h; sourceTree = "<group>"; };
@@ -163,6 +166,8 @@
 				7EF11AC0161FFB03A874BDBC /* fairlock_test.h */,
 				28F642F7D15C64994CD1A3EB /* file_device.c */,
 				B0EC0C1D487A6C6BBF5E2D73 /* file_device.h */,
+				2E5670A303E07B20C489A459 /* koio_test.c */,
+				672FFFE150BCF7F4FE32CDC4 /* koio_test.h */,
 				B0447C849E3A8B968B1EF981 /* main.c */,
 				20B07103CA86CF18F13EAA17 /* readdir_test.c */,
 				42C6FB752623335F67ECB21C /* readdir_test.h */,
@@ -432,6 +437,7 @@
 				1D26780F6B3E1D20022D1BEF /* bench.c in Sources */,
 				7F83580C6EBB598F44A32A38 /* fairlock_test.c in Sources */,
 				ED70DE5378D6DE8CF27641B4 /* file_device.c in Sources */,
+				1CBA0B86556210CE7427E882 /* koio_test.c in Sources */,
 				AB6CEE592AAEAF31A1884D6D /* main.c in Sources */,
 				D05F60B8715085284614F756 /* ntfs_blockcache.c in Sources */,
 				56B831513AAE45E42DC79153 /* ntfs_bridge.c in Sources */,

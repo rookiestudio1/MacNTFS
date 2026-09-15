@@ -81,6 +81,8 @@ typedef struct ntfsb_attr {
   bool compressed;      ///< FILE_ATTR_COMPRESSED
   bool encrypted;       ///< FILE_ATTR_ENCRYPTED
   bool sparse;          ///< FILE_ATTR_SPARSE_FILE
+  bool resident;        ///< $DATA 為常駐（資料在 MFT record 內，沒有叢集）
+  uint64_t init_size;   ///< initialized_size：之後到 size 之前的範圍在磁碟上是垃圾，必須讀成零
   struct timespec atime;
   struct timespec mtime;
   struct timespec ctime;
@@ -159,6 +161,16 @@ int ntfsb_statfs(ntfsb_volume *vol, ntfsb_statfs_info *out);
 
 /// 將快取變更寫回裝置
 int ntfsb_sync(ntfsb_volume *vol);
+
+// MARK: - Kernel offloaded I/O
+//
+// FSKit 的 KOIO 讓 kernel 拿著檔案的邏輯→實體 extent 直接對裝置 I/O，
+// 橋接層只負責：判定哪些檔案能這樣做、解析 runlist、在 I/O 完成後更新大小與時間戳。
+// 交出去的叢集之後不能再經由區塊快取碰它，所以 ntfsb_blockmap 會先把範圍 flush 並失效。
+
+/// 依檔案屬性判定是否可走 KOIO：常駐、壓縮、加密、sparse 不行；
+/// initialized_size < size 且 initialized_size 不在叢集邊界也不行（半滿叢集的尾巴是垃圾）。
+bool ntfsb_koio_eligible(const ntfsb_attr *attr, uint32_t cluster_size);
 
 // MARK: - 檔案與目錄
 

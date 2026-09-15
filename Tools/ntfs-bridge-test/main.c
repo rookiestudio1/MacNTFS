@@ -24,6 +24,7 @@
 #include "readdir_test.h"
 #include "bench.h"
 #include "fairlock_test.h"
+#include "koio_test.h"
 #include "file_device.h"
 #include "ntfs_bridge.h"
 
@@ -367,6 +368,9 @@ int main(int argc, char **argv) {
 
   // ---- 大目錄的分段列舉 ----
   failures += readdir_test_run(vol, NTFSB_ROOT_MFT_NO);
+
+  // ---- Kernel offloaded I/O ----
+  failures += koio_test_run(vol, &dev);
 
   // ---- 未對齊讀取不應放大 ----
   // ntfsb_dev_pread 的未對齊路徑會透過 bounce buffer 讀取；它只該讀涵蓋請求所需
