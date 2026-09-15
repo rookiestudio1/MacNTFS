@@ -205,3 +205,16 @@ int ntfsb_bcache_flush_range(ntfsb_bcache *c, int64_t offset, int64_t count);
 1. 把空間配置移出 `blockmapFile`——kernel 呼叫 blockmap 時所有叢集都應已配置好。做法是實作 `FSVolumePreallocateOperations`（第 10 節），或在 create／首次寫入的慢路徑先把檔案配置到位，讓 blockmap 純粹回報既有 runlist、不做任何裝置寫入。
 2. 若步驟 1 後 blockmap 仍需補零（`[init_size, offset)`），改由 `completeIO` 或慢路徑處理，確保 blockmap 期間零裝置 I/O。
 3. 先只在唯讀掛載開 KOIO 取得讀取路徑的乾淨佐證，再回頭處理寫入。
+
+## 14. 診斷 spike 結果：乾淨開機後讀寫 KOIO 無法重現死結（2026-09-15）
+
+分支 `spike/koio-diag`（commit f4c23d2）在讀寫掛載也啟用 KOIO，並加上持久化 `KOIO-DIAG` 日誌。重開機（讓 pkd／fskit_agent／fskitd 重新掃描延伸功能）後的端對端結果：
+
+- **開機自動掛載**：macOS 在開機時就用這個 spike 版本把兩顆實體 NTFS 碟讀寫掛載，kernel 隨即透過 KOIO 建立 `.fseventsd/fseventsd-uuid`（blockmap write → 配置叢集 → completeIO → getattr 回報 size=36 alloc=4096），一切正常，沒有死結。
+- **測試映像檔（256 MB，`diskutil mount` 不需 sudo 即走 ntfs3g）**依序通過：讀取 1 MB（md5 相符）、`cp` 小檔、`cp` 1 MB、`cp` 64 MB（kernel 以 1 MB 為單位呼叫 blockmap 64 次，每次 0.01～0.03 ms）、中段覆寫（read-modify-write，completeIO op=0）、追加、跨 EOF 稀疏寫入、截短後重寫、Finder 複製（copyfile 路徑）、3 個並行 40 MB 寫入 + 並行讀取 + 建 50 檔目錄樹再 `rm -rf`。卸載重掛後所有內容都以 md5／逐位元組比對驗證正確。
+- **第 13 節的假設被推翻**：跨 EOF 稀疏寫入時，`blockmapFile(write)` 內確實同步做了一次 98304 位元組的補零 `pwrite`（`[init_size=0, 98304)`），kernel 正持有該檔案的 lifs 鎖等 blockmap 回覆——這正是原本推測會形成鎖循環的情境，實際上沒有死結。整輪測試 257 次 blockmap、256 次 completeIO，慢路徑寫入 0 次。
+- 也觀察到 kernel 在 `lifs_enable_lowspace_sync_write` 之後仍正常運作，所以第 13 節「日誌停在此處」不是該訊息本身的問題。
+
+**結論**：讀寫掛載的 KOIO 在乾淨的系統狀態下可正常運作；第 13 節的死結最可能是當時反覆 killall／重新註冊延伸功能後 fskitd／kernel lifs 的殘留狀態造成（同一段時間也出現過 `Failed to store the mount point in settings file` 與「No extension with fsShortName ntfs3g」），而不是設計缺陷。仍無法百分之百排除某個未測到的路徑，因此正式啟用後應保留一段觀察期。
+
+證據：`~/koio-diag/log.txt`（測試映像檔全程）、`~/koio-diag/boot-physical-disks-log.txt`（開機自動掛載實體碟）。
