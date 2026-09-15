@@ -24,6 +24,7 @@
 #include "ntfs-3g/volume.h"
 #include "ntfs-3g/inode.h"
 #include "ntfs-3g/attrib.h"
+#include "ntfs-3g/cache.h"
 #include "ntfs-3g/dir.h"
 #include "ntfs-3g/unistr.h"
 #include "ntfs-3g/ntfstime.h"
@@ -508,6 +509,11 @@ static ntfs_volume *ntfsb_mount_internal(const char *name,
     }
     return NULL;
   }
+  // libntfs-3g 只在 ntfs_mount() 裡建立 LRU 快取，走 ntfs_device_mount() 不會建立，
+  // 於是 inode / nidata / lookup / securid 快取全是 NULL，每次 ntfs_inode_open
+  // 都得重新從裝置讀一次 MFT record。這裡補上；釋放由 ntfs_umount 內的
+  // __ntfs_volume_release 自行處理。
+  ntfs_create_lru_caches(vol);
   return vol;
 }
 
