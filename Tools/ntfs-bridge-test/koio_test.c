@@ -126,6 +126,8 @@ typedef struct extent_list {
   int limit;   ///< 模擬 packer 容量：達到後回 1
 } extent_list;
 
+// 注意：這裡達到上限時「不收下」這個 extent 才回 1；真正的 FSExtentPacker 是收下之後
+// 回報已滿。橋接層兩種都要正確（handed_end 依後者計算，對前者只會多算、不會少算）。
 static int collect_extent(void *ctx, const ntfsb_extent *e) {
   extent_list *l = ctx;
   if (l->limit && l->count >= l->limit) {
@@ -324,7 +326,8 @@ static void test_blockmap_write(ntfsb_volume *vol, file_device *dev, bool use_ha
   ntfsb_attr a;
   CHECK(ntfsb_getattr(vol, mft, &a) == 0 && a.size == (4u << 20),
         "blockmap 寫（%s）：blockmap 後 size=%llu", tag, (unsigned long long)a.size);
-  CHECK(a.init_size == (3u << 20), "blockmap 寫（%s）：init_size 推到 3 MB (%llu)", tag,
+  // 補零推到 3 MB，交出去的 [3 MB, 4 MB) 也立刻算進 init（不等 complete_io）
+  CHECK(a.init_size == (4u << 20), "blockmap 寫（%s）：init_size 推到 4 MB (%llu)", tag,
         (unsigned long long)a.init_size);
 
   uint8_t *pat = malloc(len);
@@ -401,6 +404,98 @@ static void test_write_new_file(ntfsb_volume *vol, file_device *dev) {
         "新檔案：橋接層讀回一致");
 }
 
+/// 檢查 [off, off+len) 的每個位元組都等於 want（want 為 NULL 時應全為零）
+static bool range_equals(ntfsb_volume *vol, uint64_t mft, int64_t off, int64_t len, const uint8_t *want) {
+  uint8_t *buf = malloc(len);
+  bool ok = buf && ntfsb_read(vol, mft, off, buf, len) == len;
+  for (int64_t i = 0; ok && i < len; i++) {
+    ok = buf[i] == (want ? want[i] : 0);
+  }
+  free(buf);
+  return ok;
+}
+
+/// 多段寫入交錯：kernel 可能先後拿走 [0, A) 與 [A, B) 的 extent，
+/// 並把前段寫進磁碟之後，兩段的 complete_io 才回來。
+/// 第二次 blockmap 不能把「已交給 kernel、只是還沒 complete」的前段當成洞補零。
+/// 重現的是 Finder 複製時 1.5 MB 檔案前 0x160000 位元組全變成零的情況。
+static void test_write_interleaved(ntfsb_volume *vol, file_device *dev) {
+  const int64_t A = 0x160000, B = 0x17216F;
+  uint8_t *pat = malloc(B);
+  for (int64_t i = 0; i < B; i++) {
+    pat[i] = (uint8_t)(0x31 + (i % 89));
+  }
+
+  // 1. 正常交錯：兩段都成功，complete 晚於第二次 blockmap
+  uint64_t mft = make_file(vol, "koio_interleave.bin", 0, 0);
+  CHECK(mft != 0, "交錯寫入：建立空檔案");
+  if (mft) {
+    extent_list l1 = {0}, l2 = {0};
+    int rc = ntfsb_blockmap(vol, mft, 0, A, true, collect_extent, &l1);
+    CHECK(rc == 0 && kernel_write(dev, &l1, 0, A, pat) == 0, "交錯寫入：前段 blockmap 並寫入 (rc=%d)", rc);
+    rc = ntfsb_blockmap(vol, mft, A, B - A, true, collect_extent, &l2);
+    CHECK(rc == 0 && kernel_write(dev, &l2, A, B - A, pat + A) == 0, "交錯寫入：後段 blockmap 並寫入 (rc=%d)", rc);
+    CHECK(ntfsb_complete_io(vol, mft, 0, A, true, false, false) == 0, "交錯寫入：前段 complete_io");
+    CHECK(ntfsb_complete_io(vol, mft, A, B - A, true, false, false) == 0, "交錯寫入：後段 complete_io");
+    ntfsb_attr a;
+    CHECK(ntfsb_getattr(vol, mft, &a) == 0 && a.size == (uint64_t)B && a.init_size == (uint64_t)B,
+          "交錯寫入：size=init=%lld (size=%llu init=%llu)", (long long)B,
+          (unsigned long long)a.size, (unsigned long long)a.init_size);
+    CHECK(range_equals(vol, mft, 0, A, pat), "交錯寫入：前段內容沒有被補零蓋掉");
+    CHECK(range_equals(vol, mft, A, B - A, pat + A), "交錯寫入：後段內容正確");
+  }
+
+  // 2. 檔尾那段失敗：init 退回失敗段的起點，讀回是零
+  mft = make_file(vol, "koio_tailfail.bin", 0, 0);
+  CHECK(mft != 0, "檔尾失敗：建立空檔案");
+  if (mft) {
+    extent_list l1 = {0}, l2 = {0};
+    int rc = ntfsb_blockmap(vol, mft, 0, A, true, collect_extent, &l1);
+    CHECK(rc == 0 && kernel_write(dev, &l1, 0, A, pat) == 0, "檔尾失敗：前段 blockmap 並寫入");
+    CHECK(ntfsb_complete_io(vol, mft, 0, A, true, false, false) == 0, "檔尾失敗：前段 complete_io");
+    rc = ntfsb_blockmap(vol, mft, A, B - A, true, collect_extent, &l2);
+    CHECK(rc == 0, "檔尾失敗：後段 blockmap (rc=%d)", rc);
+    CHECK(ntfsb_complete_io(vol, mft, A, B - A, true, true, false) == 0, "檔尾失敗：後段 complete_io（失敗）");
+    ntfsb_attr a;
+    CHECK(ntfsb_getattr(vol, mft, &a) == 0 && a.init_size == (uint64_t)A,
+          "檔尾失敗：init 退回 %lld (init=%llu)", (long long)A, (unsigned long long)a.init_size);
+    CHECK(range_equals(vol, mft, 0, A, pat), "檔尾失敗：前段內容正確");
+    CHECK(range_equals(vol, mft, A, B - A, NULL), "檔尾失敗：失敗段讀回零");
+  }
+
+  // 3. 中間那段失敗、後段成功：失敗段必須是零，不能露出磁碟上的舊資料
+  mft = make_file(vol, "koio_midfail.bin", 0, 0);
+  CHECK(mft != 0, "中段失敗：建立空檔案");
+  if (mft) {
+    // 先把叢集弄髒：之後失敗段若沒補零，就會讀到這些舊資料
+    extent_list l1 = {0}, l2 = {0};
+    int rc = ntfsb_blockmap(vol, mft, 0, A, true, collect_extent, &l1);
+    uint8_t *junk = malloc(A);
+    memset(junk, 0xA5, A);
+    CHECK(rc == 0 && kernel_write(dev, &l1, 0, A, junk) == 0, "中段失敗：前段 blockmap 並寫入舊資料");
+    free(junk);
+    rc = ntfsb_blockmap(vol, mft, A, B - A, true, collect_extent, &l2);
+    CHECK(rc == 0 && kernel_write(dev, &l2, A, B - A, pat + A) == 0, "中段失敗：後段 blockmap 並寫入");
+    CHECK(ntfsb_complete_io(vol, mft, 0, A, true, true, false) == 0, "中段失敗：前段 complete_io（失敗）");
+    CHECK(ntfsb_complete_io(vol, mft, A, B - A, true, false, false) == 0, "中段失敗：後段 complete_io");
+    ntfsb_attr a;
+    CHECK(ntfsb_getattr(vol, mft, &a) == 0 && a.init_size == (uint64_t)B,
+          "中段失敗：init=%lld (init=%llu)", (long long)B, (unsigned long long)a.init_size);
+    CHECK(range_equals(vol, mft, 0, A, NULL), "中段失敗：失敗段讀回零");
+    CHECK(range_equals(vol, mft, A, B - A, pat + A), "中段失敗：後段內容正確");
+    extent_list lr = {0};
+    uint8_t *got = malloc(A);
+    rc = ntfsb_blockmap(vol, mft, 0, A, false, collect_extent, &lr);
+    bool zero = rc == 0 && kernel_read(dev, &lr, 0, A, got) == 0;
+    for (int64_t i = 0; zero && i < A; i++) {
+      zero = got[i] == 0;
+    }
+    CHECK(zero, "中段失敗：kernel 讀到的失敗段也是零");
+    free(got);
+  }
+  free(pat);
+}
+
 /// write-back 快取一致性：慢路徑的小寫入必須在 blockmap 回覆前落盤
 static void test_cache_coherency(ntfsb_volume *vol, file_device *dev) {
   uint64_t mft = make_file(vol, "koio_cache.bin", 64 << 10, 0x22);
@@ -441,6 +536,7 @@ int koio_test_run(ntfsb_volume *vol, file_device *dev) {
   test_blockmap_write(vol, dev, false);
   test_blockmap_write(vol, dev, true);
   test_write_new_file(vol, dev);
+  test_write_interleaved(vol, dev);
   test_cache_coherency(vol, dev);
   return failures;
 }

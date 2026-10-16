@@ -2255,10 +2255,42 @@ static int ntfsb_attr_zero_to(ntfs_attr *na, int64_t upto) {
   return res;
 }
 
+/// 把 [from, to) 覆寫成零。呼叫端必須保證 to <= initialized_size，
+/// 否則 ntfs_attr_pwrite 會順便把 [initialized_size, from) 也補零。
+static int ntfsb_attr_zero_range(ntfs_attr *na, int64_t from, int64_t to) {
+  enum { ZERO_CHUNK = 256 * 1024 };
+  if (to > na->initialized_size) {
+    errno = EINVAL;
+    return -1;
+  }
+  uint8_t *zeros = calloc(1, ZERO_CHUNK);
+  if (!zeros) {
+    errno = ENOMEM;
+    return -1;
+  }
+  int res = 0;
+  for (int64_t pos = from; pos < to;) {
+    int64_t n = to - pos;
+    if (n > ZERO_CHUNK) {
+      n = ZERO_CHUNK;
+    }
+    s64 w = ntfs_attr_pwrite(na, pos, n, zeros);
+    if (w <= 0) {
+      res = -1;
+      break;
+    }
+    pos += w;
+  }
+  free(zeros);
+  return res;
+}
+
 /// 把 [start, end) 依 runlist 打包成 Data／ZeroFill extent。
+/// handed_end（可為 NULL）回傳交給 cb 的最後一個 extent 的結尾；
+/// FSExtentPacker 回報已滿時，該 extent 本身仍已收下。
 /// 回傳 0、1（packer 已滿）或負 errno。
 static int ntfsb_pack_runs(ntfsb_volume *v, ntfs_attr *na, int64_t start, int64_t end,
-                           ntfsb_extent_cb cb, void *context) {
+                           ntfsb_extent_cb cb, void *context, int64_t *handed_end) {
   ntfs_volume *vol = v->vol;
   ntfsb_bcache *cache = ntfsb_volume_bcache(v);
   if (ntfs_attr_map_whole_runlist(na)) {
@@ -2280,6 +2312,9 @@ static int ntfsb_pack_runs(ntfsb_volume *v, ntfs_attr *na, int64_t start, int64_
       if (gap.logical + gap.length > stop) {
         gap.length = stop - gap.logical;
       }
+      if (handed_end) {
+        *handed_end = gap.logical + gap.length;
+      }
       if (cb(context, &gap)) {
         return 1;
       }
@@ -2300,6 +2335,9 @@ static int ntfsb_pack_runs(ntfsb_volume *v, ntfs_attr *na, int64_t start, int64_
       if (cache && ntfsb_bcache_flush_range(cache, e.physical, e.length) != 0) {
         return ntfsb_neg_errno();
       }
+    }
+    if (handed_end) {
+      *handed_end = e.logical + e.length;
     }
     if (cb(context, &e)) {
       return 1;
@@ -2373,13 +2411,27 @@ int ntfsb_blockmap(ntfsb_volume *v, uint64_t mft_no, int64_t offset, int64_t len
       if (end > na->data_size && ntfs_attr_truncate_solid(na, end)) {
         rc = ntfsb_neg_errno();
       }
-      // 2. kernel 只會寫 [offset, end)，中間的洞要先在磁碟上補零
+      // 2. kernel 只會寫 [offset, end)，中間的洞要先在磁碟上補零。
+      //    步驟 4 保證 initialized_size 涵蓋所有交給 kernel 的範圍，
+      //    所以這裡補的一定是真正沒人寫過的洞，不會蓋掉 kernel 還沒 complete 的寫入。
       if (!rc && offset > na->initialized_size && ntfsb_attr_zero_to(na, offset)) {
         rc = ntfsb_neg_errno();
       }
       // 3. 打包
+      int64_t handed_end = 0;
       if (!rc) {
-        rc = ntfsb_pack_runs(v, na, offset, end, cb, context);
+        rc = ntfsb_pack_runs(v, na, offset, end, cb, context, &handed_end);
+      }
+      // 4. 交出去的範圍立刻算進 initialized_size，不等 complete_io。
+      //    kernel 會把同一個檔案拆成多段、各自 blockmap，前段寫進磁碟後
+      //    complete_io 未必先回來；若 initialized_size 還停在前段之前，
+      //    後段的步驟 2 就會把前段當成洞補零（Finder 複製時檔案前段全變成零）。
+      //    代價是寫入失敗時要在 complete_io 把該段改回零，見 ntfsb_complete_io。
+      if (handed_end > end) {
+        handed_end = end;  // 叢集對齊多出來的部分 kernel 不會寫
+      }
+      if (rc >= 0 && handed_end > na->initialized_size && ntfsb_attr_set_initialized(na, handed_end)) {
+        rc = ntfsb_neg_errno();
       }
       if (rc >= 0) {
         ni->flags |= FILE_ATTR_ARCHIVE;
@@ -2394,7 +2446,7 @@ int ntfsb_blockmap(ntfsb_volume *v, uint64_t mft_no, int64_t offset, int64_t len
       int64_t init = na->initialized_size;
       int rc = 0;
       if (offset < init) {
-        rc = ntfsb_pack_runs(v, na, offset, end < init ? end : init, cb, context);
+        rc = ntfsb_pack_runs(v, na, offset, end < init ? end : init, cb, context, NULL);
       }
       if (rc == 0 && end > init) {
         // 超過 initialized_size 的部分在磁碟上是垃圾，交給 kernel 當零讀
@@ -2448,14 +2500,26 @@ int ntfsb_complete_io(ntfsb_volume *v, uint64_t mft_no, int64_t offset, int64_t 
     }
     int64_t end = offset + length;
     if (!io_failed) {
+      // blockmap 已經推進過 initialized_size，正常情況這裡不會再改動
       if (end > na->data_size && ntfs_attr_truncate_solid(na, end)) {
         res = ntfsb_neg_errno();
       } else if (end > na->initialized_size && ntfsb_attr_set_initialized(na, end)) {
         res = ntfsb_neg_errno();
       }
+    } else if (offset < na->initialized_size) {
+      // 失敗的寫入：blockmap 已把這段算進 initialized_size，磁碟上卻可能是舊資料，
+      // 必須讓兩條路徑都讀成零。
+      if (end >= na->initialized_size) {
+        // 檔尾那段：把 initialized_size 退回 offset 即可，不必再碰（可能正在出錯的）裝置。
+        // initialized_size 涵蓋所有交出去的範圍，所以 end 之後沒有其他寫入在途中。
+        if (ntfsb_attr_set_initialized(na, offset)) {
+          res = ntfsb_neg_errno();
+        }
+      } else if (ntfsb_attr_zero_range(na, offset, end)) {
+        // 中間那段：後面已有資料，只能把這段覆寫成零
+        res = ntfsb_neg_errno();
+      }
     }
-    // 失敗的寫入：data_size 已在 blockmap 拉長，initialized_size 不推進，
-    // 於是 libntfs-3g 與 kernel（ZeroFill）讀到的都是零，兩邊一致。
     if (!held) {
       ntfs_attr_close(na);
     }

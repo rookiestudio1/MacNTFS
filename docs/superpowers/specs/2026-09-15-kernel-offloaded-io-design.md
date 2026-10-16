@@ -78,11 +78,15 @@ Write（唯讀掛載回 EROFS）：
 1. `offset+length > data_size` → `ntfs_attr_truncate_solid(na, offset+length)`，配置叢集並設新 `data_size`（失敗回 ENOSPC）。
 2. `offset > init_size` → 以 ≥ 64 KB 的零緩衝分段 `ntfs_attr_pwrite` 把 `[init_size, offset)` 補零（順便把 init 推到 `offset`）。最後一段可能 < 64 KB 進入 blockcache，由第 3 步的 flush_range 落盤。
 3. 依 runlist 打包 `[offset, offset+length)` 的 `Data` extent。
+4. 立刻把 `init_size` 推進到最後一個交給 packer 的 extent 結尾（不超過 `offset+length`），不等 completeIO。不變式：`init_size` 涵蓋所有交給 kernel 的寫入範圍，所以第 2 步與慢路徑 `ntfs_attr_pwrite` 的補零只會碰到真正的洞（見第 15 節）。
 
 ## 6. completeIO 語意
 
-- Write 成功：`data_size = max(data_size, offset+length)`（通常 blockmap 已設）、`init_size = max(init_size, min(offset+length, data_size))`、更新 mtime／ctime。
-- Write 失敗（`status` 非 nil）：不動 `init_size`。`data_size` 已在 blockmap 拉長，但 init 未推進，所以慢路徑（libntfs-3g）與 KOIO（`ZeroFill`）讀到的都是零，兩邊一致。
+- Write 成功：`data_size`／`init_size` 已在 blockmap 推進，這裡只是保險（取 max）並更新 mtime／ctime。
+- Write 失敗（`status` 非 nil）：blockmap 已把該段算進 `init_size`，磁碟上卻可能是舊資料，必須改回零：
+  - `offset+length >= init_size`（檔尾那段）：把 `init_size` 退回 `offset`，不再碰可能正在出錯的裝置。
+  - 否則（中間那段，後面已有資料）：以 `ntfs_attr_pwrite` 把 `[offset, offset+length)` 覆寫成零。
+- 已知取捨：磁碟上的 `init_size` 會比資料早一個非同步寫入的時間窗落地，若在 kernel 寫完前當機，該段會露出叢集上的舊內容而非零。libntfs-3g 自己的 pwrite 也是先改 init 再寫資料，這只是把既有的時間窗拉長。
 - Read：不做事（不更新 atime）。
 - 中繼資料寫回：
   - 有 handle → 設 `meta_dirty`，交給既有定時 flush；`FSCompleteIOFlagsAsync` 未設時額外立即 `ntfsb_file_flush`。
@@ -218,3 +222,15 @@ int ntfsb_bcache_flush_range(ntfsb_bcache *c, int64_t offset, int64_t count);
 **結論**：讀寫掛載的 KOIO 在乾淨的系統狀態下可正常運作；第 13 節的死結最可能是當時反覆 killall／重新註冊延伸功能後 fskitd／kernel lifs 的殘留狀態造成（同一段時間也出現過 `Failed to store the mount point in settings file` 與「No extension with fsShortName ntfs3g」），而不是設計缺陷。仍無法百分之百排除某個未測到的路徑，因此正式啟用後應保留一段觀察期。
 
 證據：`~/koio-diag/log.txt`（測試映像檔全程）、`~/koio-diag/boot-physical-disks-log.txt`（開機自動掛載實體碟）。
+
+## 15. 資料損毀：分段寫入時前段被補零（2026-10-16）
+
+**現象**：用 Finder 把「1.5 MB 的 `.mdx` + 兩個 3.3 GB 的 `.mdd`」資料夾複製到 ntfs3g 卷宗，`.mdx` 大小正確，但 `[0, 0x160000)` 全是零、只有尾端 72 KB 正確，兩次結果完全相同。單獨複製該檔 6 次（cp／Finder）都正確；同一資料夾複製到 APFS 也正確，排除讀取端。Finder 不會回報任何錯誤。
+
+**根本原因**：舊設計只在 completeIO 推進 `init_size`。kernel 在寫回壓力下把同一個檔案拆成 `[0, A)`、`[A, B)` 兩次 blockmap；前段已直接寫進磁碟、completeIO 還沒回來時，後段 blockmap 的第 2 步看到 `init_size` 仍是 0，便把 `[0, A)` 當成洞補零，蓋掉 kernel 剛寫的資料。之後兩次 completeIO 把 `init_size` 推到 EOF，零就留了下來。慢路徑的 `ntfs_attr_pwrite` 在 `pos > init_size` 時也會補零（`attrib.c:2059`），有同樣的風險。
+
+**修正**：blockmap 交出寫入範圍時立刻推進 `init_size`（第 5 節第 4 步），失敗的寫入改由 completeIO 退回或覆寫成零（第 6 節）。`ntfs-bridge-test` 的 `test_write_interleaved` 以假 kernel 重現此順序：修正前「前段內容沒有被補零蓋掉」失敗，修正後全數通過；另含檔尾失敗與中段失敗兩個案例。
+
+**影響範圍**：f134a2a（2026-09-15 讀寫掛載啟用 KOIO）之後經由 KOIO 寫入的檔案都可能受影響，且沒有任何錯誤提示，應以雜湊比對複製結果。
+
+**同一天一併修正**：`maximumFileSize` 回傳 `UINT64_MAX` 時，系統換算出的 `_PC_FILESIZEBITS` 是 0，Foundation 便把卷宗上限當成 2 GB，Finder 會以「其大小對於卷宗格式而言過於龐大」拒絕複製大於 2 GB 的檔案；改回傳 `INT64_MAX` 後 `FILESIZEBITS` 為 64。這個限制原本意外擋住了大型資料夾的複製，修掉後才讓上面的損毀浮現。

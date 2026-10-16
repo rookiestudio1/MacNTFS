@@ -194,7 +194,9 @@ typedef int (*ntfsb_extent_cb)(void *context, const ntfsb_extent *extent);
 /// 把檔案 [offset, offset+length) 依 runlist 打包成 extent，逐一交給 cb。
 /// - 讀取：[0, initialized_size) 內是 Data，之後是 ZeroFill。
 /// - 寫入（for_write）：先確保 [offset, offset+length) 已配置叢集、[initialized_size, offset) 已補零，
-///   再打包 Data；唯讀卷回 -EROFS。
+///   再打包 Data，並立刻把 initialized_size 推進到交出去的範圍結尾；唯讀卷回 -EROFS。
+///   initialized_size 因此涵蓋所有交給 kernel 的範圍，之後的補零只會碰到真正的洞，
+///   不會蓋掉 kernel 已寫入但 complete_io 還沒回來的資料。
 /// 每個 Data extent 交出去前，區塊快取裡對應的範圍會先 flush 並失效。
 /// 目錄回 -EISDIR、非一般檔案回 -EINVAL。
 int ntfsb_blockmap(ntfsb_volume *vol,
@@ -206,8 +208,9 @@ int ntfsb_blockmap(ntfsb_volume *vol,
                    void *context);
 
 /// kernel 完成一次 I/O 後更新中繼資料。
-/// - 寫入成功：data_size 與 initialized_size 推進到 offset+length、更新 mtime／ctime。
-/// - 寫入失敗（io_failed）：不推進 initialized_size，該範圍在兩條路徑上都讀成零。
+/// - 寫入成功：更新 mtime／ctime（data_size 與 initialized_size 已在 blockmap 推進）。
+/// - 寫入失敗（io_failed）：該範圍在兩條路徑上都讀成零——在檔尾就把 initialized_size
+///   退回 offset，在中間則把該範圍覆寫成零。
 /// - 讀取：不做事。
 /// defer_meta 為 true 且檔案有 handle 時，MFT record 交給定時 flush；否則立即寫回。
 int ntfsb_complete_io(ntfsb_volume *vol,
