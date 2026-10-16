@@ -382,7 +382,11 @@ static const NSTimeInterval NTFSMetadataFlushInterval = 5.0;
 }
 
 - (uint64_t)maximumFileSize {
-  return UINT64_MAX;
+  // libntfs 以 s64 表示檔案大小，上限是 INT64_MAX。
+  // 不能回傳 UINT64_MAX：系統換算出的 _PC_FILESIZEBITS 會變成 0，
+  // Foundation 便把卷宗最大檔案大小當成 2GB，Finder 會拒絕複製大於 2GB 的檔案。
+  // 回傳 INT64_MAX 時 FILESIZEBITS 為 64。
+  return INT64_MAX;
 }
 
 // MARK: - FSVolumeOperations：生命週期
