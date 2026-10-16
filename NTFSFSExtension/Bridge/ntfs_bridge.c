@@ -1693,10 +1693,10 @@ int ntfsb_unlink(ntfsb_volume *v, uint64_t dir_mft_no, const char *name, uint64_
     res = -EPERM;
     goto done;
   }
-  if ((ni->mrec->flags & MFT_RECORD_IS_DIRECTORY) && ntfs_check_empty_dir(ni)) {
-    res = ntfsb_neg_errno();
-    goto done;
-  }
+  // 非空目錄的判斷交給 ntfs_delete 內部的 ntfs_check_unlinkable_dir：
+  // 它在動到索引之前檢查，且允許移除「有兩個以上連結」的非空目錄的其中一個名稱。
+  // rename 是先 link 再 unlink，這裡若自行用 ntfs_check_empty_dir 擋掉，
+  // 搬移非空目錄（例如丟到垃圾桶）時舊名稱刪不掉、回復也失敗，目錄會同時掛在兩個位置。
   if (dir_ni->flags & FILE_ATTR_REPARSE_POINT) {
     res = -EOPNOTSUPP;
     goto done;

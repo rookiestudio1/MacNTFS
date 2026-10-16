@@ -318,6 +318,27 @@ int main(int argc, char **argv) {
   rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "other.txt", &found, NULL);
   CHECK(rc == 0 && found == file_mft, "覆蓋後名稱指向來源 inode");
 
+  // 搬移非空目錄（Finder「丟到垃圾桶」就是搬到 .Trashes/<uid>）。
+  // rename 是先 link 再 unlink，移除舊名稱時目錄有兩個連結，不能因為非空就拒絕；
+  // 否則舊名稱刪不掉、回復也失敗，目錄會同時掛在兩個位置。
+  {
+    uint64_t trash_mft = 0;
+    rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "trash", NTFSB_TYPE_DIR, NULL, &trash_mft);
+    CHECK(rc == 0, "建立 trash 目錄 (rc=%d)", rc);
+    rc = ntfsb_rename(vol, NTFSB_ROOT_MFT_NO, "測試資料夾", dir_mft, trash_mft, "測試資料夾", 0);
+    CHECK(rc == 0, "搬移非空目錄 (rc=%d)", rc);
+    rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, "測試資料夾", &found, NULL);
+    CHECK(rc == -ENOENT, "搬移非空目錄後舊名稱消失 (rc=%d)", rc);
+    rc = ntfsb_lookup(vol, trash_mft, "測試資料夾", &found, NULL);
+    CHECK(rc == 0 && found == dir_mft, "搬移非空目錄後新名稱存在 (rc=%d)", rc);
+    rc = ntfsb_rename(vol, trash_mft, "測試資料夾", dir_mft, NTFSB_ROOT_MFT_NO, "測試資料夾", 0);
+    CHECK(rc == 0, "非空目錄搬回原位 (rc=%d)", rc);
+    rc = ntfsb_lookup(vol, trash_mft, "測試資料夾", &found, NULL);
+    CHECK(rc == -ENOENT, "搬回後 trash 內的名稱消失 (rc=%d)", rc);
+    rc = ntfsb_unlink(vol, NTFSB_ROOT_MFT_NO, "trash", trash_mft);
+    CHECK(rc == 0, "刪除 trash 目錄 (rc=%d)", rc);
+  }
+
   // rmdir non-empty
   rc = ntfsb_unlink(vol, NTFSB_ROOT_MFT_NO, "測試資料夾", dir_mft);
   CHECK(rc == -ENOTEMPTY, "刪除非空目錄回傳 ENOTEMPTY (rc=%d)", rc);
