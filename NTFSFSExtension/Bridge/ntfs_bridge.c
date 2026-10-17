@@ -148,6 +148,48 @@ static int ntfsb_name_to_ucs(const char *name, ntfschar **out) {
   return len;
 }
 
+/// 把名稱轉成 NFC，給 libntfs-3g 的 lookup 快取當鍵。
+/// 快取直接比對名稱位元組（連「找不到」也會記住），同一名稱的 NFC／NFD 兩種寫法
+/// 會變成兩筆互不相干的記錄：先用 NFC 查過不存在的名稱，Finder 再以 NFD 建立它，
+/// NFC 那筆負向記錄就不會被更新，之後一直查不到。
+/// 實際查詢時 ntfs_mbstoucs 本來就會轉成 NFC，所以統一鍵值不影響查詢結果。
+/// 回傳新配置的字串（呼叫端 free）；純 ASCII 或無法正規化時回傳 NULL，呼叫端沿用原名稱。
+static char *ntfsb_name_nfc(const char *name) {
+#ifdef ENABLE_NFCONV
+  const unsigned char *p = (const unsigned char *)name;
+  while (*p && *p < 0x80) {
+    p++;
+  }
+  if (!*p) {
+    return NULL;
+  }
+  char *nfc = NULL;
+  if (ntfs_macosx_normalize_utf8(name, &nfc, 1) >= 0) {
+    return nfc;
+  }
+#else
+  (void)name;
+#endif
+  return NULL;
+}
+
+/// ntfs_inode_lookup_by_mbsname 的包裝：先統一成 NFC，見 ntfsb_name_nfc
+static u64 ntfsb_lookup_by_mbsname(ntfs_inode *dir_ni, const char *name) {
+  char *nfc = ntfsb_name_nfc(name);
+  u64 inum = ntfs_inode_lookup_by_mbsname(dir_ni, nfc ? nfc : name);
+  int err = errno;
+  free(nfc);
+  errno = err;
+  return inum;
+}
+
+/// ntfs_inode_update_mbsname 的包裝：先統一成 NFC，見 ntfsb_name_nfc
+static void ntfsb_update_mbsname(ntfs_inode *dir_ni, const char *name, u64 inum) {
+  char *nfc = ntfsb_name_nfc(name);
+  ntfs_inode_update_mbsname(dir_ni, nfc ? nfc : name, inum);
+  free(nfc);
+}
+
 /// 檢查名稱是否包含 NTFS 不允許的字元（保持 Windows 相容）
 static bool ntfsb_name_is_forbidden(const ntfschar *uname, int len) {
   return ntfs_forbidden_chars(uname, len, TRUE);
@@ -962,7 +1004,7 @@ int ntfsb_lookup(ntfsb_volume *v,
     inum = parent->mft_no;
     ntfsb_close_inode(v, parent);
   } else {
-    inum = ntfs_inode_lookup_by_mbsname(dir_ni, name);
+    inum = ntfsb_lookup_by_mbsname(dir_ni, name);
     if (inum == (u64)-1) {
       res = ntfsb_neg_errno();
       ntfsb_close_inode(v, dir_ni);
@@ -1642,7 +1684,7 @@ int ntfsb_create(ntfsb_volume *v,
     // libntfs-3g 的 lookup 快取連「找不到」也會記住，所以定義了新名稱之後
     // 一定要更新該筆記錄，否則先前的負向結果會讓剛建立的檔案查不到。
     // （ntfs_delete 會自行失效，只有建立名稱這一側要呼叫端處理。）
-    ntfs_inode_update_mbsname(dir_ni, name, ni->mft_no);
+    ntfsb_update_mbsname(dir_ni, name, ni->mft_no);
     // 關閉 ni 需要同步父目錄索引，因此用 close_in_dir 避免重複開啟
     if (ntfs_inode_close_in_dir(ni, dir_ni)) {
       res = ntfsb_neg_errno();
@@ -1759,7 +1801,7 @@ int ntfsb_link(ntfsb_volume *v, uint64_t mft_no, uint64_t dir_mft_no, const char
     res = ntfsb_neg_errno();
   } else {
     // 同 ntfsb_create：新名稱必須寫進 lookup 快取，蓋掉可能存在的負向記錄
-    ntfs_inode_update_mbsname(dir_ni, name, ni->mft_no);
+    ntfsb_update_mbsname(dir_ni, name, ni->mft_no);
     ni->flags |= FILE_ATTR_ARCHIVE;
     ntfs_inode_update_times(ni, NTFS_UPDATE_CTIME);
     ntfs_inode_update_times(dir_ni, NTFS_UPDATE_MCTIME);

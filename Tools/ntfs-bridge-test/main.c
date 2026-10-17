@@ -339,6 +339,31 @@ int main(int argc, char **argv) {
     CHECK(rc == 0, "刪除 trash 目錄 (rc=%d)", rc);
   }
 
+  // 同一名稱的 NFC／NFD 兩種寫法：先用一種寫法查（留下負向快取），再用另一種寫法建立，
+  // 原寫法也必須查得到。Finder 以 NFD 建立名稱，一般程式多半用 NFC 查詢。
+  {
+    // 「ベ」：NFC 是 U+30D9；NFD 是 U+30D8 + U+3099
+    static const struct {
+      const char *look, *make, *label;
+    } cases[] = {
+      {"\xE3\x83\x99" "1.txt", "\xE3\x83\x98\xE3\x82\x99" "1.txt", "NFC 查、NFD 建"},
+      {"\xE3\x83\x98\xE3\x82\x99" "2.txt", "\xE3\x83\x99" "2.txt", "NFD 查、NFC 建"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+      uint64_t made = 0;
+      rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, cases[i].look, &found, NULL);
+      CHECK(rc == -ENOENT, "%s：建立前查不到 (rc=%d)", cases[i].label, rc);
+      rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, cases[i].make, NTFSB_TYPE_FILE, NULL, &made);
+      CHECK(rc == 0, "%s：建立 (rc=%d)", cases[i].label, rc);
+      rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, cases[i].look, &found, NULL);
+      CHECK(rc == 0 && found == made, "%s：建立後原寫法查得到 (rc=%d)", cases[i].label, rc);
+      rc = ntfsb_unlink(vol, NTFSB_ROOT_MFT_NO, cases[i].make, made);
+      CHECK(rc == 0, "%s：刪除 (rc=%d)", cases[i].label, rc);
+      rc = ntfsb_lookup(vol, NTFSB_ROOT_MFT_NO, cases[i].look, &found, NULL);
+      CHECK(rc == -ENOENT, "%s：刪除後原寫法查不到 (rc=%d)", cases[i].label, rc);
+    }
+  }
+
   // rmdir non-empty
   rc = ntfsb_unlink(vol, NTFSB_ROOT_MFT_NO, "測試資料夾", dir_mft);
   CHECK(rc == -ENOTEMPTY, "刪除非空目錄回傳 ENOTEMPTY (rc=%d)", rc);
