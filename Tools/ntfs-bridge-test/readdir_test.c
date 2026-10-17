@@ -21,6 +21,7 @@
 
 typedef struct rdt_entry {
   char name[260];
+  uint64_t mft;
 } rdt_entry;
 
 typedef struct rdt_ctx {
@@ -34,7 +35,6 @@ typedef struct rdt_ctx {
 
 static int rdt_cb(void *context, const char *name, size_t len, uint64_t mft,
                   ntfsb_type type, int64_t cookie, int64_t next) {
-  (void)mft;
   (void)type;
   rdt_ctx *c = context;
   if (c->limit && c->count >= c->limit) {
@@ -50,6 +50,7 @@ static int rdt_cb(void *context, const char *name, size_t len, uint64_t mft,
   }
   memcpy(c->entries[c->count].name, name, len);
   c->entries[c->count].name[len] = '\0';
+  c->entries[c->count].mft = mft;
   c->count++;
   (void)next;
   return 0;
@@ -174,6 +175,104 @@ int readdir_test_run(ntfsb_volume *vol, uint64_t root_mft) {
                paged.count, rounds, RDT_CHUNK);
       }
     }
+  }
+
+  // ---- 快照被擠掉後續傳 ----
+  // 列舉進行到一半時，其他目錄的列舉把快照槽位全部佔滿；
+  // 原本的 cookie 找不到快照，必須重建後從同一個位置接著列，不能出錯或卡住。
+  if (!failures) {
+    rdt_ctx first = { .entries = malloc(sizeof(rdt_entry) * (size_t)cap), .cap = cap };
+    rdt_ctx other = { .entries = malloc(sizeof(rdt_entry) * 64), .cap = 64 };
+    if (!first.entries || !other.entries) {
+      free(first.entries);
+      free(other.entries);
+      free(full.entries);
+      free(paged.entries);
+      return failures + 1;
+    }
+    pos = NTFSB_COOKIE_START;
+    first.limit = RDT_CHUNK;
+    rc = ntfsb_readdir(vol, dir, &pos, rdt_cb, &first);
+    for (int k = 0; k < 64 && !rc; k++) {
+      int64_t opos = NTFSB_COOKIE_START;
+      other.count = 0;
+      other.limit = 1;
+      rc = ntfsb_readdir(vol, root_mft, &opos, rdt_cb, &other);
+    }
+    first.limit = 0;
+    rounds = 0;
+    while (!rc && pos != NTFSB_COOKIE_END && rounds++ < 10) {
+      rc = ntfsb_readdir(vol, dir, &pos, rdt_cb, &first);
+    }
+    if (rc || pos != NTFSB_COOKIE_END || first.count != full.count) {
+      fprintf(stderr, "失敗：快照被擠掉後續傳（rc=%d，收到 %d 項，應為 %d 項）\n",
+              rc, first.count, full.count);
+      failures++;
+    } else {
+      printf("通過：快照被擠掉後續傳仍完整列舉（%d 項）\n", first.count);
+    }
+    free(first.entries);
+    free(other.entries);
+  }
+
+  // ---- 邊列邊刪（模擬 Finder 清空垃圾桶）----
+  // 每段收到的項目在續傳前就刪掉。NTFS 索引刪除項目後，後面的項目會往前挪，
+  // 若以索引位置當 cookie，續傳時會跳過一些項目，最後目錄刪不乾淨（rmdir 回 ENOTEMPTY）。
+  if (!failures) {
+    rdt_ctx del = { .entries = malloc(sizeof(rdt_entry) * (size_t)cap), .cap = cap };
+    char *seen = calloc(RDT_FILES, 1);
+    if (!del.entries || !seen) {
+      free(del.entries);
+      free(seen);
+      free(full.entries);
+      free(paged.entries);
+      return failures + 1;
+    }
+    int dup = 0;
+    int unlink_err = 0;
+    pos = NTFSB_COOKIE_START;
+    rounds = 0;
+    while (pos != NTFSB_COOKIE_END && rounds++ < RDT_FILES + 100) {
+      del.count = 0;
+      del.limit = RDT_CHUNK;
+      rc = ntfsb_readdir(vol, dir, &pos, rdt_cb, &del);
+      if (rc) {
+        break;
+      }
+      for (int i = 0; i < del.count; i++) {
+        int n = -1;
+        if (sscanf(del.entries[i].name, "e%04d.txt", &n) != 1 || n < 0 || n >= RDT_FILES) {
+          continue;  // . 與 ..
+        }
+        if (seen[n]) {
+          dup++;
+        }
+        seen[n] = 1;
+        if (ntfsb_unlink(vol, dir, del.entries[i].name, del.entries[i].mft)) {
+          unlink_err++;
+        }
+      }
+    }
+    int missed = 0;
+    for (int i = 0; i < RDT_FILES; i++) {
+      missed += !seen[i];
+    }
+    if (rc || missed || dup || unlink_err) {
+      fprintf(stderr, "失敗：邊列邊刪（rc=%d，漏掉 %d 項，重複 %d 項，刪除失敗 %d 項）\n",
+              rc, missed, dup, unlink_err);
+      failures++;
+    } else {
+      printf("通過：邊列邊刪每個項目剛好收到一次（%d 項）\n", RDT_FILES);
+    }
+    rc = ntfsb_unlink(vol, root_mft, "列舉測試", dir);
+    if (rc) {
+      fprintf(stderr, "失敗：邊列邊刪後刪除目錄 (rc=%d)\n", rc);
+      failures++;
+    } else {
+      printf("通過：邊列邊刪後目錄已空、可以刪除\n");
+    }
+    free(del.entries);
+    free(seen);
   }
 
   free(full.entries);

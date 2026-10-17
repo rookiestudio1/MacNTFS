@@ -19,6 +19,7 @@
 #include <sys/disk.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "ntfs-3g/types.h"
 #include "ntfs-3g/layout.h"
@@ -47,11 +48,36 @@
 // MARK: - 內部結構
 
 /// 掛載中的卷
+/// 目錄列舉快照的槽位數與閒置逾時（秒），見「目錄列舉」一節
+#define NTFSB_DIRSNAP_SLOTS 16
+#define NTFSB_DIRSNAP_TTL   300
+
+typedef struct ntfsb_dirsnap_entry {
+  char *name;
+  size_t len;
+  uint64_t mft;
+  ntfsb_type type;
+} ntfsb_dirsnap_entry;
+
+typedef struct ntfsb_dirsnap {
+  uint32_t id;                    ///< 0 表示空槽
+  uint64_t dir_mft;
+  ntfsb_dirsnap_entry *entries;
+  size_t count;
+  uint64_t last_tick;             ///< LRU 用
+  time_t last_used;               ///< 逾時用
+} ntfsb_dirsnap;
+
+static void ntfsb_dirsnap_free(ntfsb_dirsnap *s);
+
 struct ntfsb_volume {
   ntfs_volume *vol;
   char *label;        ///< UTF-8 卷標快取
   char *mnt_point;    ///< 解析 junction 時使用的掛載點
   ntfsb_file *open_files;  ///< 目前持有的持久 handle（見下方說明）
+  ntfsb_dirsnap snaps[NTFSB_DIRSNAP_SLOTS];  ///< 進行中的目錄列舉快照
+  uint32_t next_snap_id;
+  uint64_t snap_tick;
 };
 
 // MARK: - 持久檔案 handle
@@ -798,6 +824,9 @@ int ntfsb_umount(ntfsb_volume *v) {
     ntfsb_dev_priv_destroy(priv);
     v->vol = NULL;
   }
+  for (int i = 0; i < NTFSB_DIRSNAP_SLOTS; i++) {
+    ntfsb_dirsnap_free(&v->snaps[i]);
+  }
   free(v->label);
   free(v->mnt_point);
   free(v);
@@ -1131,14 +1160,13 @@ static int ntfsb_filldir(void *dirent, const ntfschar *name, const int name_len,
   return 0;
 }
 
-int ntfsb_readdir(ntfsb_volume *v,
-                  uint64_t dir_mft_no,
-                  int64_t *pos,
-                  ntfsb_readdir_cb callback,
-                  void *context) {
-  if (!v || !v->vol || !pos || !callback) {
-    return -EINVAL;
-  }
+/// 以 NTFS 索引位置為 cookie 的原始列舉。位置在目錄有刪除時會往前挪，
+/// 只用來建立快照，不直接交給 FSKit。
+static int ntfsb_readdir_index(ntfsb_volume *v,
+                               uint64_t dir_mft_no,
+                               int64_t *pos,
+                               ntfsb_readdir_cb callback,
+                               void *context) {
   if (*pos >= NTFSB_COOKIE_END) {
     return 0;
   }
@@ -1173,6 +1201,152 @@ int ntfsb_readdir(ntfsb_volume *v,
     res = ntfsb_neg_errno();
   }
   return res;
+}
+
+// MARK: - 目錄列舉快照
+//
+// NTFS 目錄是 B+ tree 索引，刪除項目後同一個區塊裡後面的項目會往前挪，
+// 因此 ntfs_readdir 的位置不能當成穩定的 cookie：Finder 清空垃圾桶時邊列邊刪，
+// 續傳會跳過項目，最後 rmdir 回 ENOTEMPTY（Finder 顯示 -47）。
+// 做法和 lowntfs-3g 一樣：從頭列舉時把整個目錄讀成快照，之後的續傳都從快照取。
+// cookie 的高 32 位元是快照編號、低 32 位元是快照內的索引。
+// 快照列完就釋放；中途放棄的列舉由 LRU 或閒置逾時回收。
+// 找不到快照（被擠掉）時重建一份、從同一個索引接著列，結果和舊做法一樣是盡力而為。
+// 編號不會用到 0x7FFFFFFF，所以不會和 NTFSB_COOKIE_END 衝突。
+
+static void ntfsb_dirsnap_free(ntfsb_dirsnap *s) {
+  for (size_t i = 0; i < s->count; i++) {
+    free(s->entries[i].name);
+  }
+  free(s->entries);
+  memset(s, 0, sizeof(*s));
+}
+
+typedef struct ntfsb_dirsnap_builder {
+  ntfsb_dirsnap_entry *entries;
+  size_t count;
+  size_t cap;
+  bool nomem;
+} ntfsb_dirsnap_builder;
+
+static int ntfsb_dirsnap_collect(void *context, const char *name, size_t len, uint64_t mft,
+                                 ntfsb_type type, int64_t cookie, int64_t next) {
+  (void)cookie;
+  (void)next;
+  ntfsb_dirsnap_builder *b = context;
+  if (b->count == b->cap) {
+    size_t cap = b->cap ? b->cap * 2 : 64;
+    ntfsb_dirsnap_entry *e = realloc(b->entries, cap * sizeof(*e));
+    if (!e) {
+      b->nomem = true;
+      return 1;
+    }
+    b->entries = e;
+    b->cap = cap;
+  }
+  char *copy = malloc(len + 1);
+  if (!copy) {
+    b->nomem = true;
+    return 1;
+  }
+  memcpy(copy, name, len);
+  copy[len] = '\0';
+  b->entries[b->count++] = (ntfsb_dirsnap_entry){ copy, len, mft, type };
+  return 0;
+}
+
+static int64_t ntfsb_dirsnap_cookie(const ntfsb_dirsnap *s, size_t index) {
+  return (int64_t)(((uint64_t)s->id << 32) | (uint64_t)index);
+}
+
+/// 建立 dir_mft_no 的快照並放進槽位。失敗回傳 NULL 並設定 *err。
+static ntfsb_dirsnap *ntfsb_dirsnap_build(ntfsb_volume *v, uint64_t dir_mft_no, int *err) {
+  ntfsb_dirsnap_builder b = { 0 };
+  int64_t p = NTFSB_COOKIE_START;
+  int rc = ntfsb_readdir_index(v, dir_mft_no, &p, ntfsb_dirsnap_collect, &b);
+  if (!rc && b.nomem) {
+    rc = -ENOMEM;
+  }
+  if (rc) {
+    for (size_t i = 0; i < b.count; i++) {
+      free(b.entries[i].name);
+    }
+    free(b.entries);
+    *err = rc;
+    return NULL;
+  }
+  // 空槽優先，否則擠掉最久沒用的（逾時的已在 ntfsb_readdir 開頭回收）
+  ntfsb_dirsnap *slot = &v->snaps[0];
+  for (int i = 0; i < NTFSB_DIRSNAP_SLOTS; i++) {
+    if (!v->snaps[i].id) {
+      slot = &v->snaps[i];
+      break;
+    }
+    if (v->snaps[i].last_tick < slot->last_tick) {
+      slot = &v->snaps[i];
+    }
+  }
+  ntfsb_dirsnap_free(slot);
+  if (++v->next_snap_id >= 0x7FFFFFFF) {
+    v->next_snap_id = 1;
+  }
+  slot->id = v->next_snap_id;
+  slot->dir_mft = dir_mft_no;
+  slot->entries = b.entries;
+  slot->count = b.count;
+  return slot;
+}
+
+int ntfsb_readdir(ntfsb_volume *v,
+                  uint64_t dir_mft_no,
+                  int64_t *pos,
+                  ntfsb_readdir_cb callback,
+                  void *context) {
+  if (!v || !v->vol || !pos || !callback) {
+    return -EINVAL;
+  }
+  if (*pos >= NTFSB_COOKIE_END || *pos < 0) {
+    return 0;
+  }
+  // 回收閒置太久的快照（中途放棄的列舉）
+  time_t now = time(NULL);
+  for (int i = 0; i < NTFSB_DIRSNAP_SLOTS; i++) {
+    if (v->snaps[i].id && now - v->snaps[i].last_used > NTFSB_DIRSNAP_TTL) {
+      ntfsb_dirsnap_free(&v->snaps[i]);
+    }
+  }
+  ntfsb_dirsnap *s = NULL;
+  size_t index = 0;
+  if (*pos != NTFSB_COOKIE_START) {
+    uint32_t id = (uint32_t)((uint64_t)*pos >> 32);
+    index = (size_t)((uint64_t)*pos & 0xFFFFFFFFu);
+    for (int i = 0; i < NTFSB_DIRSNAP_SLOTS && !s; i++) {
+      if (v->snaps[i].id == id && v->snaps[i].dir_mft == dir_mft_no) {
+        s = &v->snaps[i];
+      }
+    }
+  }
+  if (!s) {
+    int err = 0;
+    s = ntfsb_dirsnap_build(v, dir_mft_no, &err);
+    if (!s) {
+      return err;
+    }
+  }
+  s->last_tick = ++v->snap_tick;
+  s->last_used = now;
+  for (size_t i = index; i < s->count; i++) {
+    ntfsb_dirsnap_entry *e = &s->entries[i];
+    int64_t next = i + 1 < s->count ? ntfsb_dirsnap_cookie(s, i + 1) : NTFSB_COOKIE_END;
+    if (callback(context, e->name, e->len, e->mft, e->type, ntfsb_dirsnap_cookie(s, i), next)) {
+      // 呼叫端拒收：下次從這個項目重新開始
+      *pos = ntfsb_dirsnap_cookie(s, i);
+      return 0;
+    }
+  }
+  *pos = NTFSB_COOKIE_END;
+  ntfsb_dirsnap_free(s);
+  return 0;
 }
 
 // MARK: - 持久 handle

@@ -865,7 +865,13 @@ static int NTFSEnumCallback(void *context, const char *name, size_t len, uint64_
   FSItemAttributes *attrs = nil;
   if (request) {
     ntfsb_attr a;
-    if (ntfsb_getattr(volume->_vol, mft, &a) == 0) {
+    int arc = ntfsb_getattr(volume->_vol, mft, &a);
+    if (arc == -ENOENT) {
+      // 列舉是從快照取的，項目可能在快照之後被刪掉；要求屬性時無從提供，直接略過
+      ctx->lastNextCookie = next;
+      return 0;
+    }
+    if (arc == 0) {
       type = a.type;
       attrs = [volume attributesFromBridge:&a requested:request];
     }

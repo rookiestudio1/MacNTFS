@@ -238,6 +238,8 @@ int ntfsb_parent(ntfsb_volume *vol, uint64_t mft_no, uint64_t *out_parent);
 
 /// 列舉目錄。pos 傳入起始 cookie，回傳時更新為下一次應使用的 cookie。
 /// 會包含 "." 與 ".." 兩個項目。
+/// 從 NTFSB_COOKIE_START 開始時會把整個目錄讀成快照，續傳都從快照取，
+/// 所以列舉期間刪除項目不會讓後面的項目被跳過；代價是快照之後才刪除的項目仍可能列出。
 int ntfsb_readdir(ntfsb_volume *vol,
                   uint64_t dir_mft_no,
                   int64_t *pos,
