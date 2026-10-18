@@ -79,9 +79,35 @@ struct VolumeRowView: View {
         Spacer()
       }
       .controlSize(.small)
+
+      if !isBusy, volume.isMounted, let blocker = controller.unmountBlockers[volume.bsdName] {
+        unmountBlockedPrompt(blocker)
+      }
     }
     .padding(10)
     .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+  }
+
+  /// 卸載被其他程式擋下時，說明原因並詢問是否強制卸載。
+  private func unmountBlockedPrompt(_ blocker: UnmountBlocker) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Label(blocker.explanation, systemImage: "exclamationmark.triangle.fill")
+        .font(.caption)
+        .foregroundStyle(.orange)
+        .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 8) {
+        Button("強制卸載", role: .destructive) {
+          run { await controller.unmount(volume, force: true) }
+        }
+        Button("取消") {
+          controller.dismissUnmountBlocker(volume)
+        }
+        Spacer()
+      }
+      .controlSize(.small)
+    }
+    .padding(8)
+    .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
   }
 
   /// 依掛載狀態顯示不同的操作按鈕。

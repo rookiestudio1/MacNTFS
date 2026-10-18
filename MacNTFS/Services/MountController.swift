@@ -24,6 +24,36 @@ enum MountError: LocalizedError {
   }
 }
 
+/// 卸載時擋住的程式（diskutil 回報的 dissenter）。
+struct UnmountBlocker: Equatable, Sendable {
+  /// 程式的 PID；diskutil 沒有提供時為 nil。
+  let pid: Int32?
+  /// 程式的完整路徑；diskutil 沒有提供時為 nil。
+  let path: String?
+
+  /// 顯示用的程式名稱。
+  var name: String? {
+    path.map { ($0 as NSString).lastPathComponent }
+  }
+
+  /// 是否為 macOS 的 SMB 檔案分享伺服器。
+  var isSMBServer: Bool {
+    name == "smbd"
+  }
+
+  /// 給使用者看的說明，以及強制卸載的後果。
+  var explanation: String {
+    if isSMBServer {
+      return "有其他裝置正透過 SMB 檔案分享使用這顆磁碟（smbd）。強制卸載會中斷這些連線；磁碟上的資料會先寫回，不會損壞。"
+    }
+    if let name {
+      let pidText = pid.map { "（PID \($0)）" } ?? ""
+      return "「\(name)」\(pidText)正在使用這顆磁碟。強制卸載可能讓它遺失尚未儲存的資料。"
+    }
+    return "有程式正在使用這顆磁碟。強制卸載可能讓它遺失尚未儲存的資料。"
+  }
+}
+
 /// 一筆操作紀錄。
 struct LogEntry: Identifiable, Hashable, Sendable {
   let id = UUID()
@@ -48,6 +78,8 @@ final class MountController: ObservableObject {
   @Published private(set) var busyDevices: Set<String> = []
   /// 最後一次發生的錯誤訊息。
   @Published var lastError: String?
+  /// 卸載被其他程式擋下的裝置（BSD 名稱 → 擋住的程式），UI 會提供強制卸載。
+  @Published private(set) var unmountBlockers: [String: UnmountBlocker] = [:]
   /// 操作紀錄，最多保留 200 筆。
   @Published private(set) var log: [LogEntry] = []
   /// 是否自動掛載新的 NTFS 磁碟（儲存在 UserDefaults）。
@@ -88,13 +120,50 @@ final class MountController: ObservableObject {
   }
 
   /// 以 `diskutil unmount` 卸載磁碟。
+  ///
+  /// 一般卸載若被其他程式擋下（例如 SMB 分享中的 smbd），會記錄在 `unmountBlockers`，
+  /// 由 UI 詢問使用者是否改用強制卸載。
   func unmount(_ volume: NTFSVolume, force: Bool = false) async {
+    unmountBlockers[volume.bsdName] = nil
     await perform(on: volume, description: force ? "強制卸載" : "卸載") {
       var args = ["unmount"]
       if force { args.append("force") }
       args.append(volume.deviceNode)
-      return try await Self.runProcess(Self.diskutilPath, args)
+      do {
+        return try await Self.runProcess(Self.diskutilPath, args)
+      } catch MountError.commandFailed(let exitCode, let output) where !force {
+        if let blocker = Self.parseUnmountBlocker(output) {
+          self.unmountBlockers[volume.bsdName] = blocker
+        }
+        throw MountError.commandFailed(exitCode: exitCode, stderr: output)
+      }
     }
+  }
+
+  /// 使用者決定不強制卸載，收起提示。
+  func dismissUnmountBlocker(_ volume: NTFSVolume) {
+    unmountBlockers[volume.bsdName] = nil
+  }
+
+  /// 從 `diskutil unmount` 的輸出找出擋住卸載的程式。
+  ///
+  /// diskutil 的格式為
+  /// `Volume X on disk7s2 failed to unmount: dissented by PID 4601 (/usr/sbin/smbd)`；
+  /// 沒有 PID 時只會說被 dissent 或 busy。不是「被佔用」造成的失敗回傳 nil。
+  nonisolated static func parseUnmountBlocker(_ output: String) -> UnmountBlocker? {
+    let pattern = #"dissented by PID (\d+) \(([^)]*)\)"#
+    if let regex = try? NSRegularExpression(pattern: pattern),
+       let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
+       let pidRange = Range(match.range(at: 1), in: output),
+       let pathRange = Range(match.range(at: 2), in: output) {
+      let path = String(output[pathRange])
+      return UnmountBlocker(pid: Int32(output[pidRange]), path: path.isEmpty ? nil : path)
+    }
+    let lowered = output.lowercased()
+    if lowered.contains("dissented") || lowered.contains("resource busy") {
+      return UnmountBlocker(pid: nil, path: nil)
+    }
+    return nil
   }
 
   /// 先卸載再以指定模式重新掛載。
@@ -166,6 +235,7 @@ final class MountController: ObservableObject {
   func handleDisappeared(_ bsdName: String) {
     attemptedDevices.remove(bsdName)
     busyDevices.remove(bsdName)
+    unmountBlockers.removeValue(forKey: bsdName)
   }
 
   /// 清除操作紀錄。
