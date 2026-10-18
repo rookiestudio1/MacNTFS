@@ -477,6 +477,11 @@ enum ProcessRunner {
       process.terminationHandler = { finished in
         let exitCode = finished.terminationStatus
         group.notify(queue: .global()) {
+          // Pipe 必須活到兩條管線都讀到 EOF。Process 結束後會被釋放，連帶釋放它持有的
+          // Pipe，讀取端的 fd 若在 EOF 事件送達前就被關閉，readabilityHandler 永遠等不到
+          // EOF，continuation 不會 resume，呼叫端（例如自動掛載）就一直停在「處理中」。
+          // 多個 diskutil 並行時特別容易發生。
+          withExtendedLifetime((stdoutPipe, stderrPipe)) {}
           continuation.resume(returning: Result(
             exitCode: exitCode,
             stdout: stdoutBuffer.string,

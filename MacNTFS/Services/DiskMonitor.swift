@@ -82,7 +82,14 @@ final class DiskMonitor: ObservableObject {
         updated.append(refreshed)
       }
     }
+    // 重新整理時才發現已消失的磁碟，同樣要通知出去；否則之後 DiskArbitration 的
+    // 消失回呼找不到它，掛載控制器的重試與忙碌狀態就不會清除。
+    let remaining = Set(updated.map(\.bsdName))
+    let removed = volumes.map(\.bsdName).filter { !remaining.contains($0) }
     replaceVolumes(with: updated)
+    for bsdName in removed {
+      onVolumeDisappeared?(bsdName)
+    }
   }
 
   /// 取得指定 BSD 名稱的最新磁碟資訊（會即時向 DiskArbitration 重新查詢）。
