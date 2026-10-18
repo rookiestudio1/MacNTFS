@@ -25,6 +25,9 @@ static const uint64_t NTFSItemIDOffset = 64;
 @property (nonatomic, nullable) ntfsb_file *file;
 /// 目錄內容的修改世代，作為 enumerateDirectory 的 verifier
 @property (nonatomic) uint64_t generation;
+/// 對應的 MFT 記錄已被釋放（最後一個名稱被刪除）。該編號之後可能被新的檔案或目錄
+/// 重複使用，這個 item 不可再拿 mftNo 去存取磁碟，只能等 FSKit 關閉並回收它。
+@property (nonatomic) BOOL stale;
 
 - (instancetype)initWithMFTNo:(uint64_t)mftNo type:(ntfsb_type)type NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;

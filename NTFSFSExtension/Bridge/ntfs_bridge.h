@@ -301,6 +301,10 @@ int ntfsb_create(ntfsb_volume *vol,
 /// 刪除目錄中的名稱（目錄必須為空，否則回傳 -ENOTEMPTY）
 int ntfsb_unlink(ntfsb_volume *vol, uint64_t dir_mft_no, const char *name, uint64_t mft_no);
 
+/// MFT 記錄是否仍在使用中。unlink／rename 覆蓋之後用來判斷 inode 是否真的被釋放
+///（還有其他硬連結時不會釋放），釋放後該編號可能馬上被新的檔案或目錄重複使用。
+bool ntfsb_inode_exists(ntfsb_volume *vol, uint64_t mft_no);
+
 /// 建立硬連結
 int ntfsb_link(ntfsb_volume *vol, uint64_t mft_no, uint64_t dir_mft_no, const char *name);
 

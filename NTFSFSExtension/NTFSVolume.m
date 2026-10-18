@@ -192,11 +192,38 @@ static const NSTimeInterval NTFSMetadataFlushInterval = 5.0;
   return item;
 }
 
+/// 取得可操作的 NTFSItem；已失效（MFT 記錄已釋放）的 item 一律回傳 nil
 - (NTFSItem *_Nullable)ntfsItem:(FSItem *)item {
+  NTFSItem *ni = [self anyNTFSItem:item];
+  return (ni && !ni.stale) ? ni : nil;
+}
+
+/// 取得 NTFSItem，包含已失效的；只給關閉與回收用
+- (NTFSItem *_Nullable)anyNTFSItem:(FSItem *)item {
   if ([item isKindOfClass:NTFSItem.class]) {
     return (NTFSItem *)item;
   }
   return nil;
+}
+
+/// ntfsItem: 回傳 nil 時要回覆的 errno：已失效的 item 回 ESTALE，其餘為 EINVAL
+- (int)errnoForInvalidItem:(FSItem *)item {
+  NTFSItem *ni = [self anyNTFSItem:item];
+  return (ni && ni.stale) ? ESTALE : EINVAL;
+}
+
+/// 刪除名稱之後呼叫（需持有鎖）：若 MFT 記錄已被釋放，讓 item 失效並移出快取。
+/// 該編號接下來可能馬上配給新的檔案或目錄；若沿用同一個 FSItem 物件，
+/// kernel 會把仍存活的舊 vnode（類型可能不同）配給新項目，造成檔案被當成目錄、
+/// 目錄被當成檔案（stat 看到 S_IFDIR|S_IFREG，也就是 socket）。
+- (void)retireItemIfFreed:(NTFSItem *)ni {
+  if (!ni || ni == self.rootItem || ntfsb_inode_exists(_vol, ni.mftNo)) {
+    return;
+  }
+  ni.stale = YES;
+  if (self.items[@(ni.mftNo)] == ni) {
+    [self.items removeObjectForKey:@(ni.mftNo)];
+  }
 }
 
 // MARK: - 屬性轉換
@@ -468,7 +495,7 @@ static const NSTimeInterval NTFSMetadataFlushInterval = 5.0;
          replyHandler:(void (^)(FSItemAttributes *_Nullable, NSError *_Nullable))reply {
   NTFSItem *ni = [self ntfsItem:item];
   if (!ni) {
-    reply(nil, NTFSError(EINVAL));
+    reply(nil, NTFSError([self errnoForInvalidItem:item]));
     return;
   }
   [self.lock lock];
@@ -484,7 +511,7 @@ static const NSTimeInterval NTFSMetadataFlushInterval = 5.0;
          replyHandler:(void (^)(FSItemAttributes *_Nullable, NSError *_Nullable))reply {
   NTFSItem *ni = [self ntfsItem:item];
   if (!ni) {
-    reply(nil, NTFSError(EINVAL));
+    reply(nil, NTFSError([self errnoForInvalidItem:item]));
     return;
   }
   [self.lock lock];
@@ -603,7 +630,7 @@ done:
 }
 
 - (void)reclaimItem:(FSItem *)item replyHandler:(void (^)(NSError *_Nullable))reply {
-  NTFSItem *ni = [self ntfsItem:item];
+  NTFSItem *ni = [self anyNTFSItem:item];
   if (ni) {
     [self.lock lock];
     // 正常情況 FSKit 會先 closeItem，這裡只是防止 handle 隨 item 一起消失
@@ -625,7 +652,7 @@ done:
             replyHandler:(void (^)(FSFileName *_Nullable, NSError *_Nullable))reply {
   NTFSItem *ni = [self ntfsItem:item];
   if (!ni) {
-    reply(nil, NTFSError(EINVAL));
+    reply(nil, NTFSError([self errnoForInvalidItem:item]));
     return;
   }
   char buf[PATH_MAX + 1];
@@ -804,6 +831,7 @@ done:
   int rc = _vol ? ntfsb_unlink(_vol, dir.mftNo, nameString.UTF8String, ni.mftNo) : -ENXIO;
   if (!rc) {
     dir.generation++;
+    [self retireItemIfFreed:ni];
   }
   [self.lock unlock];
   reply(rc ? NTFSError(rc) : nil);
@@ -833,6 +861,9 @@ done:
   if (!rc) {
     srcDir.generation++;
     dstDir.generation++;
+    if (over && over != ni) {
+      [self retireItemIfFreed:over];
+    }
   }
   [self.lock unlock];
   reply(rc ? nil : destinationName, rc ? NTFSError(rc) : nil);
@@ -897,7 +928,7 @@ static int NTFSEnumCallback(void *context, const char *name, size_t len, uint64_
               replyHandler:(void (^)(FSDirectoryVerifier, NSError *_Nullable))reply {
   NTFSItem *dir = [self ntfsItem:directory];
   if (!dir) {
-    reply(0, NTFSError(EINVAL));
+    reply(0, NTFSError([self errnoForInvalidItem:directory]));
     return;
   }
   [self.lock lock];
@@ -929,7 +960,7 @@ static int NTFSEnumCallback(void *context, const char *name, size_t len, uint64_
 - (void)openItem:(FSItem *)item withModes:(FSVolumeOpenModes)modes replyHandler:(void (^)(NSError *_Nullable))reply {
   NTFSItem *ni = [self ntfsItem:item];
   if (!ni) {
-    reply(NTFSError(EINVAL));
+    reply(NTFSError([self errnoForInvalidItem:item]));
     return;
   }
   if ((modes & FSVolumeOpenModesWrite) && self.readOnly) {
@@ -954,7 +985,7 @@ static int NTFSEnumCallback(void *context, const char *name, size_t len, uint64_
 }
 
 - (void)closeItem:(FSItem *)item keepingModes:(FSVolumeOpenModes)modes replyHandler:(void (^)(NSError *_Nullable))reply {
-  NTFSItem *ni = [self ntfsItem:item];
+  NTFSItem *ni = [self anyNTFSItem:item];
   if (!ni) {
     reply(NTFSError(EINVAL));
     return;
@@ -985,7 +1016,7 @@ static int NTFSEnumCallback(void *context, const char *name, size_t len, uint64_
         replyHandler:(void (^)(size_t, NSError *_Nullable))reply {
   NTFSItem *ni = [self ntfsItem:item];
   if (!ni) {
-    reply(0, NTFSError(EINVAL));
+    reply(0, NTFSError([self errnoForInvalidItem:item]));
     return;
   }
   size_t want = MIN(length, buffer.length);
@@ -1012,7 +1043,7 @@ static int NTFSEnumCallback(void *context, const char *name, size_t len, uint64_
          replyHandler:(void (^)(size_t, NSError *_Nullable))reply {
   NTFSItem *ni = [self ntfsItem:item];
   if (!ni) {
-    reply(0, NTFSError(EINVAL));
+    reply(0, NTFSError([self errnoForInvalidItem:item]));
     return;
   }
   [self.lock lock];
@@ -1059,7 +1090,7 @@ static int NTFSPackExtent(void *context, const ntfsb_extent *e) {
         replyHandler:(void (^)(NSError *_Nullable))reply {
   NTFSItem *ni = [self ntfsItem:file];
   if (!ni) {
-    reply(NTFSError(EINVAL));
+    reply(NTFSError([self errnoForInvalidItem:file]));
     return;
   }
   BOOL forWrite = (flags & FSBlockmapFlagsWrite) != 0;
@@ -1084,7 +1115,7 @@ static int NTFSPackExtent(void *context, const ntfsb_extent *e) {
              replyHandler:(void (^)(NSError *_Nullable))reply {
   NTFSItem *ni = [self ntfsItem:file];
   if (!ni) {
-    reply(NTFSError(EINVAL));
+    reply(NTFSError([self errnoForInvalidItem:file]));
     return;
   }
   [self.lock lock];
@@ -1125,7 +1156,7 @@ static int NTFSPackExtent(void *context, const ntfsb_extent *e) {
   NTFSItem *ni = [self ntfsItem:item];
   NSString *nameString = NTFSStringFromName(name);
   if (!ni || !nameString) {
-    reply(nil, NTFSError(EINVAL));
+    reply(nil, NTFSError([self errnoForInvalidItem:item]));
     return;
   }
   [self.lock lock];
@@ -1162,7 +1193,7 @@ static int NTFSPackExtent(void *context, const ntfsb_extent *e) {
   NTFSItem *ni = [self ntfsItem:item];
   NSString *nameString = NTFSStringFromName(name);
   if (!ni || !nameString) {
-    reply(NTFSError(EINVAL));
+    reply(NTFSError([self errnoForInvalidItem:item]));
     return;
   }
   [self.lock lock];
@@ -1194,7 +1225,7 @@ static int NTFSXattrListCallback(void *context, const char *name, size_t len) {
             replyHandler:(void (^)(NSArray<FSFileName *> *_Nullable, NSError *_Nullable))reply {
   NTFSItem *ni = [self ntfsItem:item];
   if (!ni) {
-    reply(nil, NTFSError(EINVAL));
+    reply(nil, NTFSError([self errnoForInvalidItem:item]));
     return;
   }
   NSMutableArray<FSFileName *> *names = [NSMutableArray array];

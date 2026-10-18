@@ -674,6 +674,43 @@ int main(int argc, char **argv) {
         char gb[8];
         int64_t r = ntfsb_file_read(lf, 0, gb, 4);
         CHECK(r < 0, "檔案已刪除後 handle 讀取回傳錯誤 (r=%lld)", (long long)r);
+        CHECK(!ntfsb_inode_exists(vol, lmft), "移除最後一個名稱後 MFT 記錄已釋放");
+
+        // MFT 編號被重複使用：新檔案必須拿到自己的 handle，舊 handle 不能被接到新 inode 上
+        // MFT 配置器不會立刻回頭用剛釋放的記錄，持續建立直到拿到同一個編號
+        uint64_t rmft = 0;
+        uint64_t reuse_dir = 0;
+        rc = ntfsb_create(vol, NTFSB_ROOT_MFT_NO, "reusechurn", NTFSB_TYPE_DIR, NULL, &reuse_dir);
+        for (int i = 0; rc == 0 && i < 5000; i++) {
+          char nm[32];
+          snprintf(nm, sizeof(nm), "r%04d", i);
+          rc = ntfsb_create(vol, reuse_dir, nm, NTFSB_TYPE_FILE, NULL, &rmft);
+          if (rc == 0 && rmft == lmft) {
+            rc = ntfsb_rename(vol, reuse_dir, nm, rmft, NTFSB_ROOT_MFT_NO, "reuse.txt", 0);
+            break;
+          }
+        }
+        CHECK(rc == 0 && rmft == lmft, "新檔案重複使用同一個 MFT 編號 (rc=%d mft=%llu 原本=%llu)",
+              rc, (unsigned long long)rmft, (unsigned long long)lmft);
+        CHECK(ntfsb_inode_exists(vol, rmft), "新檔案的 MFT 記錄在使用中");
+        if (rc == 0) {
+          int rerr = 0;
+          ntfsb_file *rf = ntfsb_file_open(vol, rmft, &rerr);
+          CHECK(rf != NULL && rf != lf, "新檔案拿到獨立的 handle (errno=%d)", rerr);
+          if (rf) {
+            int64_t w = ntfsb_file_write(rf, 0, "NEWDATA!", 8);
+            CHECK(w == 8, "新 handle 可寫 (w=%lld)", (long long)w);
+            ntfsb_file_close(rf);
+          }
+          // 再刪一次新檔案（觸發 suspend／resume），舊 handle 仍不得接上任何 inode
+          r = ntfsb_file_write(lf, 0, "OLD", 3);
+          CHECK(r < 0, "舊 handle 寫入仍回傳錯誤 (r=%lld)", (long long)r);
+          char nb[8] = {0};
+          r = ntfsb_read(vol, rmft, 0, nb, 8);
+          CHECK(r == 8 && memcmp(nb, "NEWDATA!", 8) == 0, "新檔案內容未被舊 handle 污染 (內容=%.8s)", nb);
+          rc = ntfsb_unlink(vol, NTFSB_ROOT_MFT_NO, "reuse.txt", rmft);
+          CHECK(rc == 0, "刪除 reuse.txt (rc=%d)", rc);
+        }
         rc = ntfsb_file_close(lf);
         CHECK(rc == 0, "關閉已失效的 handle (rc=%d)", rc);
       }
