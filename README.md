@@ -7,6 +7,7 @@
 - 偵測到 NTFS 硬碟時自動掛載到 `/Volumes/<卷標>`（透過 DiskArbitration + FSKit 探測順序）
 - 可同時掛載多顆硬碟
 - 選單列 App 提供：手動掛載、卸載、改為唯讀重新掛載、改回讀寫
+- 介面依系統語言自動切換繁體中文、簡體中文或英文，其他語言一律顯示英文
 
 ## 專案結構
 
@@ -22,6 +23,8 @@ NTFSFSExtension/            FSKit 檔案系統延伸功能（Objective-C + C，S
 Tools/ntfs-bridge-test/     以映像檔測試橋接層的 CLI
 Scripts/build-ntfs3g.sh     下載並編譯 libntfs-3g（arm64 + x86_64 universal 靜態庫）
 ThirdParty/ntfs-3g/         編譯好的 libntfs-3g.a 與標頭（LGPL 2.1）
+*/Localizable.xcstrings     介面字串的翻譯（en / zh-Hans / zh-Hant）
+*/InfoPlist.xcstrings       Info.plist 字串的翻譯（例如延伸功能在系統設定裡顯示的名稱）
 Scripts/make-appicon.sh     由 ntfs.png 產生 App icon 的 asset catalog
 ntfs.png                    App icon 來源圖（選單列圖示是 SF Symbol，不使用這張）
 build/                      建置產物（已在 .gitignore）
@@ -70,6 +73,20 @@ diskutil mount readOnly disk4s1        # 唯讀掛載
 diskutil unmount disk4s1               # 卸載
 sudo mount -F -t ntfs3g -o rdonly /dev/disk4s1 /Volumes/NTFS   # 備援：直接呼叫 FSKit
 ```
+
+## 多語系
+
+App 與延伸功能各有一份 `Localizable.xcstrings`（String Catalog），支援英文、簡體中文、繁體中文。開發語言是英文，所以系統語言不在這三種之內時會顯示英文。
+
+程式碼裡直接寫繁體中文字串當作 key：SwiftUI 的 `Text("…")`、`Button("…")` 會自動查表，其他地方用 `String(localized: "…")`，Objective-C 用 `NSLocalizedString(@"…", nil)`。新增或修改字串後，先建置一次，再把擷取出的字串同步進 catalog，補上三種語言的翻譯：
+
+```bash
+xcodebuild -scheme MacNTFS -configuration Release build
+find build/Intermediates.noindex/MacNTFS.build/Release/MacNTFS.build/Objects-normal/arm64 -name '*.stringsdata' -print0 \
+  | xargs -0 xcrun xcstringstool sync MacNTFS/Localizable.xcstrings --stringsdata
+```
+
+同步後還沒翻譯的 key 會缺少 `localizations`，用 Xcode 開啟 catalog 就能看到並補上。
 
 ## 測試
 

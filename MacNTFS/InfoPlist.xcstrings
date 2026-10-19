@@ -1,0 +1,50 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "NSAppleEventsUsageDescription" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MacNTFS needs to run the mount command with administrator privileges so it can take over drives that the system's built-in read-only driver mounted first."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MacNTFS 需要以管理员权限运行 mount 命令，以便在系统内置只读驱动程序抢先挂载时改用 MacNTFS 挂载。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MacNTFS 需要以管理員權限執行 mount 指令，以便在系統內建唯讀驅動程式搶先掛載時改用 MacNTFS 掛載。"
+          }
+        }
+      }
+    },
+    "NSHumanReadableCopyright" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "libntfs-3g is licensed under the LGPL; see LICENSE for this project's source code license."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "libntfs-3g 以 LGPL 授权；本项目源代码的授权见 LICENSE。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "libntfs-3g 以 LGPL 授權；本專案原始碼授權見 LICENSE。"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

@@ -25,15 +25,15 @@ final class ExtensionStatus: ObservableObject {
     var label: String {
       switch self {
       case .unknown:
-        return "正在檢查延伸功能狀態…"
+        return String(localized: "正在檢查延伸功能狀態…")
       case .notInstalled:
-        return "尚未安裝 NTFS 延伸功能"
+        return String(localized: "尚未安裝 NTFS 延伸功能")
       case .installedDisabled:
-        return "NTFS 延伸功能尚未啟用"
+        return String(localized: "NTFS 延伸功能尚未啟用")
       case .enabled:
-        return "NTFS 延伸功能已啟用"
+        return String(localized: "NTFS 延伸功能已啟用")
       case .error(let message):
-        return "無法檢查延伸功能狀態：\(message)"
+        return String(localized: "無法檢查延伸功能狀態：\(message)")
       }
     }
 

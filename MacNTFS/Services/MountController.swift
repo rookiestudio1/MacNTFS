@@ -15,9 +15,11 @@ enum MountError: LocalizedError {
     switch self {
     case .commandFailed(let exitCode, let stderr):
       let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-      return trimmed.isEmpty ? "指令執行失敗（結束代碼 \(exitCode)）" : "指令執行失敗（結束代碼 \(exitCode)）：\(trimmed)"
+      return trimmed.isEmpty
+        ? String(localized: "指令執行失敗（結束代碼 \(exitCode)）")
+        : String(localized: "指令執行失敗（結束代碼 \(exitCode)）：\(trimmed)")
     case .privilegedCommandFailed(let message):
-      return "需要管理員權限的指令執行失敗：\(message)"
+      return String(localized: "需要管理員權限的指令執行失敗：\(message)")
     case .invalidState(let message):
       return message
     }
@@ -44,13 +46,15 @@ struct UnmountBlocker: Equatable, Sendable {
   /// 給使用者看的說明，以及強制卸載的後果。
   var explanation: String {
     if isSMBServer {
-      return "有其他裝置正透過 SMB 檔案分享使用這顆磁碟（smbd）。強制卸載會中斷這些連線；磁碟上的資料會先寫回，不會損壞。"
+      return String(localized: "有其他裝置正透過 SMB 檔案分享使用這顆磁碟（smbd）。強制卸載會中斷這些連線；磁碟上的資料會先寫回，不會損壞。")
     }
     if let name {
-      let pidText = pid.map { "（PID \($0)）" } ?? ""
-      return "「\(name)」\(pidText)正在使用這顆磁碟。強制卸載可能讓它遺失尚未儲存的資料。"
+      if let pid {
+        return String(localized: "「\(name)」（PID \(pid)）正在使用這顆磁碟。強制卸載可能讓它遺失尚未儲存的資料。")
+      }
+      return String(localized: "「\(name)」正在使用這顆磁碟。強制卸載可能讓它遺失尚未儲存的資料。")
     }
-    return "有程式正在使用這顆磁碟。強制卸載可能讓它遺失尚未儲存的資料。"
+    return String(localized: "有程式正在使用這顆磁碟。強制卸載可能讓它遺失尚未儲存的資料。")
   }
 }
 
@@ -110,7 +114,7 @@ final class MountController: ObservableObject {
 
   /// 以 `diskutil mount` 掛載磁碟。
   func mount(_ volume: NTFSVolume, readOnly: Bool) async {
-    await perform(on: volume, description: readOnly ? "唯讀掛載" : "掛載") {
+    await perform(on: volume, description: readOnly ? String(localized: "唯讀掛載") : String(localized: "掛載")) {
       var args = ["mount"]
       if readOnly { args.append("readOnly") }
       args.append(volume.deviceNode)
@@ -125,7 +129,7 @@ final class MountController: ObservableObject {
   /// 由 UI 詢問使用者是否改用強制卸載。
   func unmount(_ volume: NTFSVolume, force: Bool = false) async {
     unmountBlockers[volume.bsdName] = nil
-    await perform(on: volume, description: force ? "強制卸載" : "卸載") {
+    await perform(on: volume, description: force ? String(localized: "強制卸載") : String(localized: "卸載")) {
       var args = ["unmount"]
       if force { args.append("force") }
       args.append(volume.deviceNode)
@@ -168,7 +172,7 @@ final class MountController: ObservableObject {
 
   /// 先卸載再以指定模式重新掛載。
   func remount(_ volume: NTFSVolume, readOnly: Bool) async {
-    await perform(on: volume, description: readOnly ? "改為唯讀掛載" : "改為讀寫掛載") {
+    await perform(on: volume, description: readOnly ? String(localized: "改為唯讀掛載") : String(localized: "改為讀寫掛載")) {
       _ = try await Self.runProcess(Self.diskutilPath, ["unmount", volume.deviceNode])
       var args = ["mount"]
       if readOnly { args.append("readOnly") }
@@ -183,9 +187,9 @@ final class MountController: ObservableObject {
   /// `do shell script ... with administrator privileges` 直接執行 `/sbin/mount -F -t ntfs3g`。
   /// 直接呼叫 `mount` 需要 root 權限，因此會跳出系統的管理員密碼對話框。
   func takeOverFromSystemDriver(_ volume: NTFSVolume, readOnly: Bool) async {
-    await perform(on: volume, description: "改用 MacNTFS 掛載") {
+    await perform(on: volume, description: String(localized: "改用 MacNTFS 掛載")) {
       guard case .mountedBySystemReadOnly = volume.mountState else {
-        throw MountError.invalidState("「\(volume.displayName)」目前不是由系統唯讀驅動掛載，無法接手。")
+        throw MountError.invalidState(String(localized: "「\(volume.displayName)」目前不是由系統唯讀驅動掛載，無法接手。"))
       }
 
       _ = try await Self.runProcess(Self.diskutilPath, ["unmount", volume.deviceNode])
@@ -194,7 +198,7 @@ final class MountController: ObservableObject {
       let mountOptions = readOnly ? " -o rdonly" : ""
       let shellCommand = "mkdir -p \(Self.shellQuote(mountPoint)) && /sbin/mount -F -t ntfs3g\(mountOptions) \(Self.shellQuote(volume.deviceNode)) \(Self.shellQuote(mountPoint))"
       let output = try await Self.runPrivilegedShell(shellCommand)
-      return output.isEmpty ? "已掛載於 \(mountPoint)" : output
+      return output.isEmpty ? String(localized: "已掛載於 \(mountPoint)") : output
     }
   }
 
@@ -202,7 +206,7 @@ final class MountController: ObservableObject {
 
   /// 新磁碟出現時的處理：視設定自動掛載，或在系統已唯讀掛載時提示使用者。
   func handleAppeared(_ volume: NTFSVolume) {
-    appendLog("偵測到 NTFS 磁碟「\(volume.displayName)」（\(volume.bsdName)），狀態：\(volume.mountState.label)")
+    appendLog(String(localized: "偵測到 NTFS 磁碟「\(volume.displayName)」（\(volume.bsdName)），狀態：\(volume.mountState.label)"))
 
     switch volume.mountState {
     case .notMounted:
@@ -216,16 +220,16 @@ final class MountController: ObservableObject {
         let latest = self.diskMonitor?.currentVolume(bsdName: volume.bsdName) ?? volume
         switch latest.mountState {
         case .notMounted:
-          self.appendLog("自動掛載「\(latest.displayName)」…")
+          self.appendLog(String(localized: "自動掛載「\(latest.displayName)」…"))
           await self.mount(latest, readOnly: false)
         case .mountedBySystemReadOnly:
-          self.appendLog("「\(latest.displayName)」已由系統內建唯讀驅動掛載，可在清單中選擇「改用 MacNTFS 掛載」。")
+          self.appendLog(String(localized: "「\(latest.displayName)」已由系統內建唯讀驅動掛載，可在清單中選擇「改用 MacNTFS 掛載」。"))
         default:
-          self.appendLog("「\(latest.displayName)」已由其他方式掛載，略過自動掛載。")
+          self.appendLog(String(localized: "「\(latest.displayName)」已由其他方式掛載，略過自動掛載。"))
         }
       }
     case .mountedBySystemReadOnly:
-      appendLog("「\(volume.displayName)」已由系統內建唯讀驅動掛載，可在清單中選擇「改用 MacNTFS 掛載」以取得寫入能力。")
+      appendLog(String(localized: "「\(volume.displayName)」已由系統內建唯讀驅動掛載，可在清單中選擇「改用 MacNTFS 掛載」以取得寫入能力。"))
     case .mountedByMacNTFS, .mountedByOther:
       break
     }
@@ -252,22 +256,24 @@ final class MountController: ObservableObject {
     _ operation: () async throws -> String
   ) async {
     guard !busyDevices.contains(volume.bsdName) else {
-      appendLog("「\(volume.displayName)」正在處理其他操作，略過「\(description)」。", isError: true)
+      appendLog(String(localized: "「\(volume.displayName)」正在處理其他操作，略過「\(description)」。"), isError: true)
       return
     }
     busyDevices.insert(volume.bsdName)
     defer { busyDevices.remove(volume.bsdName) }
 
-    appendLog("\(description)「\(volume.displayName)」（\(volume.deviceNode)）…")
+    appendLog(String(localized: "\(description)「\(volume.displayName)」（\(volume.deviceNode)）…"))
     do {
       let output = try await operation()
       let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-      appendLog(trimmed.isEmpty ? "\(description)完成。" : "\(description)完成：\(trimmed)")
+      appendLog(trimmed.isEmpty
+        ? String(localized: "\(description)完成。")
+        : String(localized: "\(description)完成：\(trimmed)"))
       lastError = nil
       // 操作完成後立即重新讀取狀態，不必等待 DiskArbitration 通知。
       diskMonitor?.refresh()
     } catch {
-      let message = "\(description)「\(volume.displayName)」失敗：\(error.localizedDescription)"
+      let message = String(localized: "\(description)「\(volume.displayName)」失敗：\(error.localizedDescription)")
       appendLog(message, isError: true)
       lastError = message
       diskMonitor?.refresh()
@@ -297,14 +303,14 @@ final class MountController: ObservableObject {
     let source = "do shell script \"\(appleScriptEscape(command))\" with administrator privileges"
     return try await Task.detached(priority: .userInitiated) {
       guard let script = NSAppleScript(source: source) else {
-        throw MountError.privilegedCommandFailed("無法建立 AppleScript。")
+        throw MountError.privilegedCommandFailed(String(localized: "無法建立 AppleScript。"))
       }
       var errorInfo: NSDictionary?
       let descriptor = script.executeAndReturnError(&errorInfo)
       if let errorInfo {
         let message = (errorInfo[NSAppleScript.errorMessage] as? String)
           ?? (errorInfo[NSAppleScript.errorBriefMessage] as? String)
-          ?? "未知錯誤"
+          ?? String(localized: "未知錯誤")
         throw MountError.privilegedCommandFailed(message)
       }
       return descriptor.stringValue ?? ""

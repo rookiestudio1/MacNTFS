@@ -1,0 +1,116 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "NTFS 卷檢查通過" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The NTFS volume passed the check"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NTFS 卷检查通过"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NTFS 卷檢查通過"
+          }
+        }
+      }
+    },
+    "Windows 處於休眠狀態，請在 Windows 完整關機後再試；目前只能唯讀掛載" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Windows is hibernated. Shut Windows down completely and try again; for now the volume can only be mounted read-only"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Windows 处于休眠状态，请在 Windows 完全关机后再试；目前只能只读挂载"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Windows 處於休眠狀態，請在 Windows 完整關機後再試；目前只能唯讀掛載"
+          }
+        }
+      }
+    },
+    "卷未正常卸載，掛載時將重設 NTFS 日誌" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The volume was not unmounted cleanly; the NTFS journal will be reset when it is mounted"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "卷未正常卸载，挂载时将重置 NTFS 日志"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "卷未正常卸載，掛載時將重設 NTFS 日誌"
+          }
+        }
+      }
+    },
+    "尚未載入任何 NTFS 資源，無法檢查" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No NTFS resource has been loaded, so it can't be checked"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未加载任何 NTFS 资源，无法检查"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未載入任何 NTFS 資源，無法檢查"
+          }
+        }
+      }
+    },
+    "無法解析 NTFS 卷 (errno %d)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to parse the NTFS volume (errno %d)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法解析 NTFS 卷 (errno %d)"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法解析 NTFS 卷 (errno %d)"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

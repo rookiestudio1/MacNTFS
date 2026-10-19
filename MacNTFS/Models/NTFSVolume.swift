@@ -16,13 +16,13 @@ enum MountState: Hashable, Sendable {
   var label: String {
     switch self {
     case .notMounted:
-      return "未掛載"
+      return String(localized: "未掛載")
     case .mountedByMacNTFS(let readOnly):
-      return readOnly ? "已掛載（唯讀）" : "已掛載（讀寫）"
+      return readOnly ? String(localized: "已掛載（唯讀）") : String(localized: "已掛載（讀寫）")
     case .mountedBySystemReadOnly:
-      return "系統唯讀掛載"
+      return String(localized: "系統唯讀掛載")
     case .mountedByOther:
-      return "其他驅動"
+      return String(localized: "其他驅動")
     }
   }
 }
@@ -74,7 +74,7 @@ struct NTFSVolume: Identifiable, Hashable, Sendable {
     case let kind?:
       return .mountedByOther(kind: kind)
     case nil:
-      return .mountedByOther(kind: "未知")
+      return .mountedByOther(kind: String(localized: "未知"))
     }
   }
 
@@ -87,7 +87,7 @@ struct NTFSVolume: Identifiable, Hashable, Sendable {
 
   /// 格式化後的容量字串，例如「512 GB」。
   var formattedSize: String {
-    guard let mediaSize else { return "容量未知" }
+    guard let mediaSize else { return String(localized: "容量未知") }
     return ByteCountFormatter.string(fromByteCount: mediaSize, countStyle: .file)
   }
 

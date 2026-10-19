@@ -180,18 +180,18 @@ static void NTFSLibntfsLogSink(bool isError, const char *msg) {
       ntfsb_probe_info info;
       int rc = ntfsb_probe(&cb, &info);
       if (rc < 0) {
-        [task logMessage:[NSString stringWithFormat:@"無法解析 NTFS 卷 (errno %d)", -rc]];
+        [task logMessage:[NSString stringWithFormat:NSLocalizedString(@"無法解析 NTFS 卷 (errno %d)", nil), -rc]];
         result = fs_errorForPOSIXError(-rc);
       } else if (info.hibernated) {
-        [task logMessage:@"Windows 處於休眠狀態，請在 Windows 完整關機後再試；目前只能唯讀掛載"];
+        [task logMessage:NSLocalizedString(@"Windows 處於休眠狀態，請在 Windows 完整關機後再試；目前只能唯讀掛載", nil)];
         result = quick ? nil : fs_errorForPOSIXError(EPERM);
       } else if (info.dirty) {
-        [task logMessage:@"卷未正常卸載，掛載時將重設 NTFS 日誌"];
+        [task logMessage:NSLocalizedString(@"卷未正常卸載，掛載時將重設 NTFS 日誌", nil)];
       } else {
-        [task logMessage:@"NTFS 卷檢查通過"];
+        [task logMessage:NSLocalizedString(@"NTFS 卷檢查通過", nil)];
       }
     } else {
-      [task logMessage:@"尚未載入任何 NTFS 資源，無法檢查"];
+      [task logMessage:NSLocalizedString(@"尚未載入任何 NTFS 資源，無法檢查", nil)];
       result = fs_errorForPOSIXError(ENXIO);
     }
     progress.completedUnitCount = 1;

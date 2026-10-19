@@ -119,7 +119,7 @@ struct VolumeRowView: View {
         run { await controller.mount(volume, readOnly: false) }
       }
       .disabled(!volume.isWritableMedia)
-      .help(volume.isWritableMedia ? "以讀寫模式掛載" : "媒體本身為唯讀，無法以讀寫模式掛載")
+      .help(volume.isWritableMedia ? Text("以讀寫模式掛載") : Text("媒體本身為唯讀，無法以讀寫模式掛載"))
       Button("唯讀掛載") {
         run { await controller.mount(volume, readOnly: true) }
       }

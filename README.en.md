@@ -7,6 +7,7 @@ An Xcode project that gives macOS 15.4+ read-write NTFS support using Apple **FS
 - Automatically mounts NTFS drives at `/Volumes/<label>` when they are connected (via DiskArbitration and FSKit probe order)
 - Mounts multiple drives at the same time
 - A menu bar app for mounting, unmounting, remounting read-only, and switching back to read-write
+- The interface follows the system language: English, Simplified Chinese, or Traditional Chinese (English for any other language)
 
 ## Project layout
 
@@ -22,6 +23,8 @@ NTFSFSExtension/            FSKit file system extension (Objective-C + C, Swift 
 Tools/ntfs-bridge-test/     CLI that tests the bridge against a disk image
 Scripts/build-ntfs3g.sh     Downloads and builds libntfs-3g (arm64 + x86_64 universal static library)
 ThirdParty/ntfs-3g/         Prebuilt libntfs-3g.a and headers (LGPL 2.1)
+*/Localizable.xcstrings     UI string translations (en / zh-Hans / zh-Hant)
+*/InfoPlist.xcstrings       Info.plist string translations (e.g. the extension's name in System Settings)
 Scripts/make-appicon.sh     Generates the app icon asset catalog from ntfs.png
 ntfs.png                    Source image for the app icon (the menu bar icon is an SF Symbol, not this image)
 build/                      Build products (in .gitignore)
@@ -60,7 +63,7 @@ The default bundle IDs are `com.rookiestudio.MacNTFS` and `com.rookiestudio.MacN
 1. Move `MacNTFS.app` to `/Applications` and launch it once.
 2. Go to **System Settings > General > Login Items & Extensions > File System Extensions** and enable **MacNTFS**.
 3. Connect an NTFS drive. DiskArbitration follows `FSProbeOrder` (500/1500/3500 for this extension, lower than the built-in `ntfs.fs` at 1000/2000/4000), so MacNTFS probes the drive first and mounts it under `/Volumes`.
-4. If the built-in read-only driver still mounts the drive first (`DAVolumeKind == ntfs`), the menu bar app shows 「系統唯讀掛載」 (system read-only mount) and offers 「改用 MacNTFS 掛載」 (mount with MacNTFS). The app's interface is currently in Traditional Chinese only. This fallback runs `diskutil unmount` first, then `mount -F -t ntfs3g` with administrator privileges.
+4. If the built-in read-only driver still mounts the drive first (`DAVolumeKind == ntfs`), the menu bar app shows "System read-only" and offers "Mount with MacNTFS". This fallback runs `diskutil unmount` first, then `mount -F -t ntfs3g` with administrator privileges.
 
 The equivalent commands for doing this by hand:
 
@@ -70,6 +73,20 @@ diskutil mount readOnly disk4s1        # Read-only mount
 diskutil unmount disk4s1               # Unmount
 sudo mount -F -t ntfs3g -o rdonly /dev/disk4s1 /Volumes/NTFS   # Fallback: call FSKit directly
 ```
+
+## Localization
+
+The app and the extension each have a `Localizable.xcstrings` (String Catalog) with English, Simplified Chinese, and Traditional Chinese. The development language is English, so the interface falls back to English when the system language is none of these three.
+
+Source code uses Traditional Chinese strings as keys: SwiftUI's `Text("…")` and `Button("…")` look them up automatically, other code uses `String(localized: "…")`, and Objective-C uses `NSLocalizedString(@"…", nil)`. After adding or changing a string, build once, then sync the extracted strings into the catalog and fill in all three languages:
+
+```bash
+xcodebuild -scheme MacNTFS -configuration Release build
+find build/Intermediates.noindex/MacNTFS.build/Release/MacNTFS.build/Objects-normal/arm64 -name '*.stringsdata' -print0 \
+  | xargs -0 xcrun xcstringstool sync MacNTFS/Localizable.xcstrings --stringsdata
+```
+
+Keys that still need translating have no `localizations` after syncing; open the catalog in Xcode to see and fill them in.
 
 ## Testing
 
