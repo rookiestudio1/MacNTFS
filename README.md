@@ -1,5 +1,7 @@
 # MacNTFS
 
+[English](README.en.md) | 繁體中文
+
 用 Apple **FSKit** 搭配 **libntfs-3g** 讓 macOS 15.4+ 讀寫 NTFS 的 Xcode 專案。
 
 - 偵測到 NTFS 硬碟時自動掛載到 `/Volumes/<卷標>`（透過 DiskArbitration + FSKit 探測順序）
@@ -179,4 +181,6 @@ codesign -d --entitlements - --xml /Applications/MacNTFS.app/Contents/Extensions
 
 ## 授權
 
-libntfs-3g 為 LGPL 2.1（見 `ThirdParty/ntfs-3g/LICENSE.LGPL`），以靜態連結方式使用；本專案自有原始碼授權由專案擁有者決定。
+本專案原始碼以 [MIT 授權](LICENSE) 釋出。
+
+libntfs-3g 不在 MIT 授權範圍內，它採用 LGPL 2.1（見 `ThirdParty/ntfs-3g/LICENSE.LGPL`），本專案以靜態連結方式使用。本專案隨原始碼附上 `Scripts/build-ntfs3g.sh`，取得原始碼的人都能換用自己修改過的 libntfs-3g 重新建置與連結。
